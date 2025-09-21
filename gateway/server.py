@@ -1,6 +1,5 @@
 import socket
 import struct
-from serializer import serialize_message
 from processor import process_batch_by_type
 
 HOST = "0.0.0.0"
@@ -124,10 +123,11 @@ def parse_item(data, offset, entity_type):
     
     return item, offset
 
-def handle_client(conn, addr, mq):
+def handle_client(conn, addr):
     print(f"[GATEWAY] Conexión de {addr}")
     buffer = b""
     batch_id = 0
+    total_processed = 0
     
     try:
         while True:
@@ -180,18 +180,14 @@ def handle_client(conn, addr, mq):
                     processed_items = process_batch_by_type(items, entity_type)
                     
                     if processed_items:
-                        # Serializar mensaje interno
-                        msg = serialize_message(
-                            processed_items,
-                            stream_id="default",
-                            batch_id=f"b{batch_id:04d}",
-                            is_batch_end=True,
-                            is_eos=False
-                        )
-
-                        # Enviar al middleware
-                        mq.send(msg)
-                        print(f"[GATEWAY] Batch {batch_id} de tipo {entity_type} enviado al middleware ({len(processed_items)} registros)")
+                        total_processed += len(processed_items)
+                        print(f"[GATEWAY] Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
+                        print(f"[GATEWAY] Total procesado hasta ahora: {total_processed} registros")
+                        
+                        # Aquí podrías guardar los datos procesados en archivos, base de datos, etc.
+                        # Por ahora solo los mostramos en consola
+                        for item in processed_items:
+                            print(f"  - {item}")
 
                 except Exception as e:
                     print(f"[GATEWAY] Error procesando batch: {e}")
@@ -203,4 +199,4 @@ def handle_client(conn, addr, mq):
         print(f"[GATEWAY] Error en conexión con {addr}: {e}")
     finally:
         conn.close()
-        print(f"[GATEWAY] Conexión con {addr} cerrada")
+        print(f"[GATEWAY] Conexión con {addr} cerrada. Total procesado: {total_processed} registros")

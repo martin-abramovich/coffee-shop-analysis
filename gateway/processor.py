@@ -9,11 +9,7 @@ def reduce_transaction(row: dict) -> Transactions:
     return Transactions(
         transaction_id=row["transaction_id"],
         store_id=row["store_id"],
-        payment_method=row["payment_method"],
-        voucher_id=row["voucher_id"],
         user_id=row["user_id"],
-        original_amount=float(row["original_amount"]),
-        discount_applied=float(row["discount_applied"]),
         final_amount=float(row["final_amount"]),
         created_at=row["created_at"],
     )
@@ -22,15 +18,12 @@ def reduce_user(row: dict) -> UserShort:
     return UserShort(
         user_id=row["user_id"],
         birthdate=row["birthdate"],  # Mantener como string por simplicidad
-        registered_at=row["registered_at"],  # Mantener como string por simplicidad
     )
 
 def reduce_store(row: dict) -> StoreShort:
     return StoreShort(
         store_id=row["store_id"],
         store_name=row["store_name"],
-        city=row["city"],
-        state=row["state"],
     )
 
 def reduce_menu_item(row: dict) -> MenuItemShort:
