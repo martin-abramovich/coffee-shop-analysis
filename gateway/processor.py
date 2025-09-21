@@ -106,6 +106,39 @@ def process_data_by_type(rows: list, data_type: str) -> list:
     logger.info(f"Procesados {len(processed)} registros de tipo {data_type}")
     return processed
 
+def process_batch_by_type(items: list, data_type: str) -> list:
+    """
+    Procesa un batch de items según el tipo de datos.
+    Versión optimizada para el protocolo binario.
+    """
+    if not items:
+        return []
+    
+    processed = []
+    
+    for item in items:
+        try:
+            if data_type == "transactions":
+                processed.append(reduce_transaction(item))
+            elif data_type == "users":
+                processed.append(reduce_user(item))
+            elif data_type == "stores":
+                processed.append(reduce_store(item))
+            elif data_type == "menu_items":
+                processed.append(reduce_menu_item(item))
+            elif data_type == "transaction_items":
+                processed.append(reduce_transaction_item(item))
+            else:
+                logger.warning(f"Tipo de datos desconocido: {data_type}, saltando item")
+                continue
+                
+        except Exception as e:
+            logger.error(f"Error procesando item {item}: {e}")
+            continue
+    
+    logger.info(f"Procesados {len(processed)} registros de tipo {data_type}")
+    return processed
+
 def validate_and_clean_data(row: dict, data_type: str) -> dict:
     """
     Valida y limpia los datos según el tipo.

@@ -1,91 +1,203 @@
 import socket
+import struct
 from serializer import serialize_message
-from processor import determine_data_type, process_data_by_type
+from processor import process_batch_by_type
 
 HOST = "0.0.0.0"
-PORT = 5000
+PORT = 9000
 
-def parse_message(raw_msg: str):
+# Tipos de entidades según el protocolo
+ENTITY_TYPES = {
+    0: "transactions",
+    1: "transaction_items", 
+    2: "users",
+    3: "stores",
+    4: "menu_items"
+}
+
+def read_string(data, offset):
+    """Lee un string del buffer: 4 bytes de longitud + string"""
+    if offset + 4 > len(data):
+        raise ValueError("Datos insuficientes para leer longitud de string")
+    
+    length = struct.unpack('>I', data[offset:offset+4])[0]
+    offset += 4
+    
+    if offset + length > len(data):
+        raise ValueError("Datos insuficientes para leer string")
+    
+    string_data = data[offset:offset+length].decode('utf-8')
+    return string_data, offset + length
+
+def read_float(data, offset):
+    """Lee un float de 4 bytes"""
+    if offset + 4 > len(data):
+        raise ValueError("Datos insuficientes para leer float")
+    
+    value = struct.unpack('>f', data[offset:offset+4])[0]
+    return value, offset + 4
+
+def read_int(data, offset):
+    """Lee un int de 4 bytes"""
+    if offset + 4 > len(data):
+        raise ValueError("Datos insuficientes para leer int")
+    
+    value = struct.unpack('>i', data[offset:offset+4])[0]
+    return value, offset + 4
+
+def parse_batch(data):
     """
-    Protocolo Cliente → Gateway:
-    type=data|stream_id=...|batch_id=...|seq_no=...|is_batch_end=...|is_eos=...|payload=key=value,key2=value2|...;
+    Parsea un batch binario según el protocolo:
+    - 4 bytes: cantidad de items
+    - 1 byte: tipo de entidad (0-4)
+    - Para cada item: campos según el tipo
     """
-    raw_msg = raw_msg.strip(";")
+    offset = 0
     
-    # Parsear header
-    header_parts = raw_msg.split("|payload=")
-    if len(header_parts) != 2:
-        raise ValueError("Formato de mensaje inválido")
+    # Leer cantidad de items (4 bytes)
+    if len(data) < 4:
+        raise ValueError("Datos insuficientes para leer cantidad de items")
     
-    header_str, payload_str = header_parts
+    item_count = struct.unpack('>I', data[offset:offset+4])[0]
+    offset += 4
     
-    # Parsear header
-    header = {}
-    for part in header_str.split("|"):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            header[k.strip()] = v.strip()
+    # Leer tipo de entidad (1 byte)
+    if len(data) < offset + 1:
+        raise ValueError("Datos insuficientes para leer tipo de entidad")
     
-    # Parsear payload
-    rows = []
-    if payload_str.strip():
-        for row in payload_str.split("|"):
-            kv_pairs = row.split(",")
-            row_dict = {}
-            for pair in kv_pairs:
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    row_dict[k.strip()] = v.strip()
-            if row_dict:  # Solo agregar filas no vacías
-                rows.append(row_dict)
+    entity_type_byte = data[offset]
+    offset += 1
     
-    return header, rows
+    if entity_type_byte not in ENTITY_TYPES:
+        raise ValueError(f"Tipo de entidad inválido: {entity_type_byte}")
+    
+    entity_type = ENTITY_TYPES[entity_type_byte]
+    
+    # Parsear items según el tipo
+    items = []
+    for i in range(item_count):
+        try:
+            item, offset = parse_item(data, offset, entity_type)
+            items.append(item)
+        except Exception as e:
+            print(f"[GATEWAY] Error parseando item {i}: {e}")
+            continue
+    
+    return entity_type, items
+
+def parse_item(data, offset, entity_type):
+    """Parsea un item individual según su tipo"""
+    item = {}
+    
+    if entity_type == "transactions":
+        # transaction_id (string), store_id (string), user_id (string), 
+        # final_amount (float), created_at (string)
+        item['transaction_id'], offset = read_string(data, offset)
+        item['store_id'], offset = read_string(data, offset)
+        item['user_id'], offset = read_string(data, offset)
+        item['final_amount'], offset = read_float(data, offset)
+        item['created_at'], offset = read_string(data, offset)
+        
+    elif entity_type == "transaction_items":
+        # transaction_id (string), item_id (string), quantity (int), 
+        # subtotal (float), created_at (string)
+        item['transaction_id'], offset = read_string(data, offset)
+        item['item_id'], offset = read_string(data, offset)
+        item['quantity'], offset = read_int(data, offset)
+        item['subtotal'], offset = read_float(data, offset)
+        item['created_at'], offset = read_string(data, offset)
+        
+    elif entity_type == "users":
+        # user_id (string), birthdate (string)
+        item['user_id'], offset = read_string(data, offset)
+        item['birthdate'], offset = read_string(data, offset)
+        
+    elif entity_type == "stores":
+        # store_id (string), store_name (string)
+        item['store_id'], offset = read_string(data, offset)
+        item['store_name'], offset = read_string(data, offset)
+        
+    elif entity_type == "menu_items":
+        # item_id (string), item_name (string)
+        item['item_id'], offset = read_string(data, offset)
+        item['item_name'], offset = read_string(data, offset)
+    
+    return item, offset
 
 def handle_client(conn, addr, mq):
     print(f"[GATEWAY] Conexión de {addr}")
-    buffer = ""
+    buffer = b""
+    batch_id = 0
     
     try:
         while True:
-            data = conn.recv(1024)
+            data = conn.recv(4096)  # Buffer más grande para datos binarios
             if not data:
                 break
 
-            buffer += data.decode("utf-8")
+            buffer += data
 
-            while ";" in buffer:
-                raw_msg, buffer = buffer.split(";", 1)
+            # Procesar batches completos
+            while len(buffer) >= 5:  # Mínimo: 4 bytes (cantidad) + 1 byte (tipo)
                 try:
-                    header, rows = parse_message(raw_msg + ";")
-                    
-                    # Verificar si es End of Stream
-                    if header.get("is_eos") == "1":
-                        print(f"[GATEWAY] End of Stream recibido para stream_id: {header.get('stream_id')}")
+                    # Intentar leer la cantidad de items
+                    if len(buffer) < 4:
                         break
                     
-                    # Determinar tipo de datos basado en las columnas
-                    data_type = determine_data_type(rows[0] if rows else {})
+                    item_count = struct.unpack('>I', buffer[:4])[0]
                     
-                    # Procesar según el tipo de datos
-                    reduced = process_data_by_type(rows, data_type)
+                    # Calcular tamaño mínimo del batch
+                    # 4 bytes (cantidad) + 1 byte (tipo) + datos de items
+                    min_batch_size = 5
                     
-                    if reduced:  # Solo enviar si hay datos procesados
+                    # Estimación conservadora del tamaño del batch
+                    # Asumimos al menos 20 bytes por item (muy conservador)
+                    estimated_size = min_batch_size + (item_count * 20)
+                    
+                    if len(buffer) < estimated_size:
+                        # No tenemos suficientes datos, esperar más
+                        break
+                    
+                    # Intentar parsear el batch
+                    entity_type, items = parse_batch(buffer)
+                    
+                    # Calcular el tamaño real del batch parseado
+                    # Esto es una aproximación, en un caso real necesitarías
+                    # que parse_batch devuelva el offset final
+                    batch_size = 5  # header
+                    for item in items:
+                        for value in item.values():
+                            if isinstance(value, str):
+                                batch_size += 4 + len(value.encode('utf-8'))
+                            else:
+                                batch_size += 4
+                    
+                    # Remover el batch procesado del buffer
+                    buffer = buffer[batch_size:]
+                    
+                    # Procesar el batch
+                    batch_id += 1
+                    processed_items = process_batch_by_type(items, entity_type)
+                    
+                    if processed_items:
                         # Serializar mensaje interno
                         msg = serialize_message(
-                            reduced, 
-                            stream_id=header.get("stream_id", "default"),
-                            batch_id=header.get("batch_id", "b001"),
-                            is_batch_end=header.get("is_batch_end") == "1",
-                            is_eos=header.get("is_eos") == "1"
+                            processed_items,
+                            stream_id="default",
+                            batch_id=f"b{batch_id:04d}",
+                            is_batch_end=True,
+                            is_eos=False
                         )
 
                         # Enviar al middleware
                         mq.send(msg)
-                        print(f"[GATEWAY] Batch {header.get('batch_id')} de tipo {data_type} enviado al middleware ({len(reduced)} registros)")
+                        print(f"[GATEWAY] Batch {batch_id} de tipo {entity_type} enviado al middleware ({len(processed_items)} registros)")
 
                 except Exception as e:
-                    print(f"[GATEWAY] Error procesando mensaje: {e}")
-                    continue
+                    print(f"[GATEWAY] Error procesando batch: {e}")
+                    # En caso de error, limpiar el buffer y continuar
+                    buffer = b""
+                    break
 
     except Exception as e:
         print(f"[GATEWAY] Error en conexión con {addr}: {e}")
