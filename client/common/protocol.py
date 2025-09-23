@@ -195,12 +195,17 @@ def parse_optional_date(date_str: str) -> Optional[date]:
 
 def dict_to_transaction(row: dict) -> Transactions:
     """Convierte un dict de CSV a objeto Transactions"""
+    # Aceptar tanto 'payment_method' como 'payment_method_id'
+    payment_method_value = row.get('payment_method')
+    if payment_method_value is None:
+        payment_method_value = row.get('payment_method_id', '')
+
     return Transactions(
         transaction_id=row['transaction_id'],
         store_id=row['store_id'],
-        payment_method=row['payment_method'],
-        voucher_id=row['voucher_id'],
-        user_id=row['user_id'],
+        payment_method=payment_method_value,
+        voucher_id=row.get('voucher_id', ''),
+        user_id=row.get('user_id', ''),
         original_amount=float(row['original_amount']),
         discount_applied=float(row['discount_applied']),
         final_amount=float(row['final_amount']),
@@ -274,7 +279,7 @@ def detect_entity_type_from_headers(headers: List[str]) -> str:
     
     if 'transaction_id' in headers_set and 'item_id' in headers_set and 'quantity' in headers_set:
         return 'transaction_items'
-    elif 'transaction_id' in headers_set and 'store_id' in headers_set and 'payment_method' in headers_set:
+    elif 'transaction_id' in headers_set and 'store_id' in headers_set and ('payment_method' in headers_set or 'payment_method_id' in headers_set):
         return 'transactions'
     elif 'user_id' in headers_set and 'gender' in headers_set and 'birthdate' in headers_set:
         return 'users'

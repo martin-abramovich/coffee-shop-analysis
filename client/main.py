@@ -36,7 +36,7 @@ def load_config(config_path="config.ini"):
     """
     Carga la configuración desde el archivo config.ini
     """
-    config = configparser.ConfigParser()
+    config = configparser.ConfigParser(interpolation=None)
     
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Archivo de configuración no encontrado: {config_path}")

@@ -50,6 +50,12 @@ class Client:
             if not self.sock:
                 raise RuntimeError("Cliente no conectado. Llama connect() primero.")
                 
+            # Señalar al servidor que no enviaremos más datos (half-close de escritura)
+            try:
+                self.sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
             raw_len = self._recv_exact(4)
             msg_len = int.from_bytes(raw_len, byteorder="big")
             data = self._recv_exact(msg_len)
