@@ -1,4 +1,5 @@
 import socket
+import threading
 from typing import List, Union
 from .protocol import encode_batch
 from .entities import Transactions, TransactionItems, Users, Stores, MenuItem
@@ -8,6 +9,8 @@ class Client:
         self.host = host
         self.port = port
         self.sock = None
+        self._shutdown_requested = False
+        self._lock = threading.Lock()
 
     def connect(self):
         """Establece conexión con el servidor"""
@@ -18,11 +21,15 @@ class Client:
         """
         Envía un batch de entidades del mismo tipo usando el protocolo binario.
         """
-        if not self.sock:
-            raise RuntimeError("Cliente no conectado. Llama connect() primero.")
-        
-        data = encode_batch(entities)
-        self.sock.sendall(data)
+        with self._lock:
+            if self._shutdown_requested:
+                raise RuntimeError("Cliente en proceso de cierre.")
+            
+            if not self.sock:
+                raise RuntimeError("Cliente no conectado. Llama connect() primero.")
+            
+            data = encode_batch(entities)
+            self.sock.sendall(data)
 
     def send_batches(self, batches: List[List[Union[Transactions, TransactionItems, Users, Stores, MenuItem]]]):
         """
@@ -36,13 +43,17 @@ class Client:
         Bloquea hasta recibir la respuesta final del servidor.
         Asumimos que el servidor envía primero 4 bytes (header) con el tamaño del mensaje.
         """
-        if not self.sock:
-            raise RuntimeError("Cliente no conectado. Llama connect() primero.")
-            
-        raw_len = self._recv_exact(4)
-        msg_len = int.from_bytes(raw_len, byteorder="big")
-        data = self._recv_exact(msg_len)
-        return data.decode("utf-8")
+        with self._lock:
+            if self._shutdown_requested:
+                raise RuntimeError("Cliente en proceso de cierre.")
+                
+            if not self.sock:
+                raise RuntimeError("Cliente no conectado. Llama connect() primero.")
+                
+            raw_len = self._recv_exact(4)
+            msg_len = int.from_bytes(raw_len, byteorder="big")
+            data = self._recv_exact(msg_len)
+            return data.decode("utf-8")
 
     def _recv_exact(self, n: int) -> bytes:
         """Recibe exactamente n bytes (evita short read)."""
@@ -54,11 +65,31 @@ class Client:
             buf += chunk
         return buf
 
+    def request_shutdown(self):
+        """Solicita el cierre ordenado del cliente"""
+        with self._lock:
+            self._shutdown_requested = True
+            print("\n🔄 Solicitud de cierre recibida. Cerrando conexión...")
+
     def close(self):
         """Cierra la conexión"""
-        if self.sock:
-            self.sock.close()
-            self.sock = None
+        with self._lock:
+            if self.sock:
+                try:
+                    # Intentar cerrar elegantemente
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    # Socket ya cerrado o en mal estado
+                    pass
+                finally:
+                    self.sock.close()
+                    self.sock = None
+                    print("✓ Conexión cerrada correctamente")
+
+    def is_shutdown_requested(self) -> bool:
+        """Verifica si se solicitó el cierre"""
+        with self._lock:
+            return self._shutdown_requested
 
     def __enter__(self):
         """Context manager entry"""

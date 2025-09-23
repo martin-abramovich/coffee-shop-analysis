@@ -3,6 +3,34 @@ from common.protocol import entity_batch_iterator, detect_entity_type_from_filen
 import os
 import glob
 import configparser
+import signal
+import sys
+
+# Variable global para el cliente (necesario para signal handler)
+global_client = None
+
+def signal_handler(signum, frame):
+    """
+    Maneja las señales SIGTERM e SIGINT para graceful shutdown
+    """
+    signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    print(f"\n⚠️  Señal {signal_name} recibida. Iniciando cierre ordenado...")
+    
+    if global_client:
+        global_client.request_shutdown()
+    
+    # Dar tiempo para cerrar la conexión
+    import time
+    time.sleep(1)
+    
+    print("👋 Cliente terminado por señal del sistema.")
+    sys.exit(0)
+
+def setup_signal_handlers():
+    """Configura los manejadores de señales"""
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    print("🛡️  Manejadores de señales configurados (SIGTERM, SIGINT)")
 
 def load_config(config_path="config.ini"):
     """
@@ -66,6 +94,12 @@ def read_and_send(csv_file_path: str, batch_size: int, client: Client):
     
     try:
         for batch in entity_batch_iterator(csv_file_path, batch_size, entity_type):
+            # Verificar si se solicitó el cierre
+            if client.is_shutdown_requested():
+                print(f"  ⚠️  Cierre solicitado durante procesamiento de {os.path.basename(csv_file_path)}")
+                print(f"  📊 Progreso: {batch_count} batches, {total_entities} entidades enviadas")
+                return
+            
             client.send_batch(batch)
             batch_count += 1
             total_entities += len(batch)
@@ -73,13 +107,25 @@ def read_and_send(csv_file_path: str, batch_size: int, client: Client):
         
         print(f"  ✓ Completado: {batch_count} batches, {total_entities} entidades totales")
         
+    except RuntimeError as e:
+        if "proceso de cierre" in str(e):
+            print(f"  ⚠️  Cierre ordenado durante envío: {e}")
+            print(f"  📊 Progreso: {batch_count} batches, {total_entities} entidades enviadas")
+        else:
+            print(f"  ✗ Error de runtime: {e}")
+            raise
     except Exception as e:
         print(f"  ✗ Error procesando archivo: {e}")
         raise
 
 
 def main():
+    global global_client
+    
     try:
+        # Configurar manejadores de señales
+        setup_signal_handlers()
+        
         # Cargar configuración
         config = load_config()
         
@@ -101,23 +147,36 @@ def main():
         
         # Usar la clase Client con context manager
         with Client(host, port) as client:
+            global_client = client  # Asignar para signal handler
             print(f"\n✓ Conectado al servidor en {host}:{port}")
             
             # Procesar cada archivo CSV
             for i, csv_file in enumerate(csv_files, 1):
+                # Verificar si se solicitó el cierre
+                if client.is_shutdown_requested():
+                    print(f"\n⚠️  Cierre solicitado. Archivos procesados: {i-1}/{len(csv_files)}")
+                    break
+                    
                 print(f"\n[{i}/{len(csv_files)}] Procesando: {os.path.basename(csv_file)}")
                 read_and_send(csv_file, batch_size, client)
             
-            # Opcional: recibir respuesta final del servidor
-            try:
-                print("\nEsperando respuesta del servidor...")
-                response = client.receive_response()
-                print(f"Respuesta del servidor: {response}")
-            except Exception as e:
-                print(f"No se pudo recibir respuesta del servidor: {e}")
+            # Opcional: recibir respuesta final del servidor (solo si no hay cierre pendiente)
+            if not client.is_shutdown_requested():
+                try:
+                    print("\nEsperando respuesta del servidor...")
+                    response = client.receive_response()
+                    print(f"Respuesta del servidor: {response}")
+                except Exception as e:
+                    print(f"No se pudo recibir respuesta del servidor: {e}")
+            else:
+                print("\n⚠️  Omitiendo recepción de respuesta debido a cierre solicitado")
         
-        print("\n✓ Cliente terminó el procesamiento de todos los archivos.")
+        global_client = None  # Limpiar referencia
+        print("\n✓ Cliente terminó el procesamiento.")
         
+    except KeyboardInterrupt:
+        print(f"\n⚠️  Interrupción por teclado (Ctrl+C)")
+        return 1
     except (FileNotFoundError, ValueError) as e:
         print(f"✗ Error de configuración: {e}")
         return 1
