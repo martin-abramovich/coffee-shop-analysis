@@ -67,19 +67,29 @@ class MessageMiddlewareExchange(MessageMiddleware):
 
 	def start_consuming(self, on_message_callback):
 		try:
-			# Creamos una cola temporal para consumir mensajes del exchange
+			# Cola temporal para consumir mensajes del exchange
 			result = self.channel.queue_declare(queue="", exclusive=True)
 			queue_name = result.method.queue
 
 			for key in self.route_keys:
 				self.channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=key)
 
+			def wrapper_callback(ch, method, properties, body):
+				try:
+					on_message_callback(body)  # Ejecutamos tu lógica
+					ch.basic_ack(delivery_tag=method.delivery_tag)  # Confirmamos que fue procesado
+				except Exception as e:
+					ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+					# print(f"Error procesando mensaje: {e}")
+
 			self.channel.basic_consume(
 				queue=queue_name,
-				on_message_callback=lambda ch, method, properties, body: on_message_callback(body),
-				auto_ack=True
+				on_message_callback=wrapper_callback,
+				auto_ack=False 
 			)
+
 			self.channel.start_consuming()
+
 		except pika.exceptions.AMQPConnectionError:
 			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
 		except Exception as e:
