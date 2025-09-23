@@ -1,80 +1,134 @@
-# client/main.py
-import argparse
-import socket
-import csv
-from entities import Transaction
+from common.client import Client
+from common.protocol import entity_batch_iterator, detect_entity_type_from_filename
+import os
+import glob
+import configparser
 
-def send_message(sock: socket.socket, message: str):
+def load_config(config_path="config.ini"):
     """
-    Envía un mensaje como string al gateway TCP.
-    Añade un delimitador ';' al final para separar mensajes.
+    Carga la configuración desde el archivo config.ini
     """
-    data = message + ";"
-    sock.sendall(data.encode("utf-8"))
+    config = configparser.ConfigParser()
+    
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Archivo de configuración no encontrado: {config_path}")
+    
+    config.read(config_path)
+    
+    # Validar que existan las secciones necesarias
+    if 'CLIENT' not in config:
+        raise ValueError("Sección [CLIENT] no encontrada en el archivo de configuración")
+    
+    return {
+        'dataset_path': config.get('CLIENT', 'dataset_path', fallback='./datasets/'),
+        'host': config.get('CLIENT', 'host', fallback='localhost'),
+        'port': config.getint('CLIENT', 'port', fallback=9000),
+        'batch_size': config.getint('CLIENT', 'batch_size', fallback=100),
+        'stream_id': config.get('CLIENT', 'stream_id', fallback='report-123'),
+        'log_level': config.get('LOGGING', 'log_level', fallback='INFO'),
+        'log_format': config.get('LOGGING', 'log_format', fallback='%(asctime)s - %(levelname)s - %(message)s')
+    }
 
-def batch_iterator(csv_path, batch_size):
+def find_csv_files(dataset_path):
     """
-    Lee un CSV y genera listas de dicts de tamaño batch_size.
+    Encuentra todos los archivos CSV en el directorio especificado.
+    Si dataset_path es un archivo, devuelve una lista con ese archivo.
+    Si es un directorio, devuelve todos los archivos .csv en ese directorio.
     """
-    with open(csv_path, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        batch = []
-        for row in reader:
-            batch.append(row)
-            if len(batch) >= batch_size:
-                yield batch
-                batch = []
-        if batch:
-            yield batch
+    if os.path.isfile(dataset_path):
+        if dataset_path.endswith('.csv'):
+            return [dataset_path]
+        else:
+            raise ValueError(f"El archivo {dataset_path} no es un archivo CSV")
+    elif os.path.isdir(dataset_path):
+        csv_files = glob.glob(os.path.join(dataset_path, "*.csv"))
+        if not csv_files:
+            raise ValueError(f"No se encontraron archivos CSV en el directorio {dataset_path}")
+        return sorted(csv_files)  # Ordenar para procesamiento consistente
+    else:
+        raise ValueError(f"La ruta {dataset_path} no existe o no es válida")
 
-def serialize_message(batch, stream_id, batch_id, seq_no, is_batch_end=False, is_eos=False):
+def read_and_send(csv_file_path: str, batch_size: int, client: Client):
     """
-    Convierte un batch en un string delimitado manualmente.
-    Ejemplo de formato simple: key1=value1,key2=value2|...
+    Lee un archivo CSV y envía los datos en batches usando el protocolo binario.
     """
-    payload_lines = []
-    for row in batch:
-        fields = [f"{k}={v}" for k, v in row.items()]
-        payload_lines.append(",".join(fields))
-    payload_str = "|".join(payload_lines)
+    # Detectar tipo de entidad desde el nombre del archivo
+    try:
+        entity_type = detect_entity_type_from_filename(os.path.basename(csv_file_path))
+        print(f"  Tipo detectado: {entity_type}")
+    except ValueError as e:
+        print(f"  Error detectando tipo: {e}")
+        print(f"  Intentando detectar desde cabeceras...")
+        entity_type = None  # Se detectará automáticamente
+    
+    batch_count = 0
+    total_entities = 0
+    
+    try:
+        for batch in entity_batch_iterator(csv_file_path, batch_size, entity_type):
+            client.send_batch(batch)
+            batch_count += 1
+            total_entities += len(batch)
+            print(f"  Enviado batch {batch_count}, entidades: {len(batch)}")
+        
+        print(f"  ✓ Completado: {batch_count} batches, {total_entities} entidades totales")
+        
+    except Exception as e:
+        print(f"  ✗ Error procesando archivo: {e}")
+        raise
 
-    message = (
-        f"type=data|stream_id={stream_id}|batch_id={batch_id}|seq_no={seq_no}|"
-        f"is_batch_end={int(is_batch_end)}|is_eos={int(is_eos)}|payload={payload_str}"
-    )
-    return message
-
-def read_and_send(csv_path, batch_size, sock, stream_id):
-    seq_no = 1
-    batch_id = 1
-
-    for batch in batch_iterator(csv_path, batch_size):
-        msg = serialize_message(batch, stream_id, f"b{batch_id:04d}", seq_no, is_batch_end=True)
-        send_message(sock, msg)
-        print(f"Sent batch {batch_id} seq {seq_no}, size={len(batch)}")
-        seq_no += 1
-        batch_id += 1
-
-    # Enviar mensaje End of Stream
-    eos_msg = serialize_message([], stream_id, f"b{batch_id:04d}", seq_no, is_batch_end=True, is_eos=True)
-    send_message(sock, eos_msg)
-    print("Sent End of Stream.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Client sending CSV to Gateway via TCP")
-    parser.add_argument("--dataset", required=True, help="CSV file path")
-    parser.add_argument("--host", default="localhost", help="Gateway host")
-    parser.add_argument("--port", type=int, default=9000, help="Gateway port")
-    parser.add_argument("--batch-size", type=int, default=1000, help="Rows per batch")
-    parser.add_argument("--stream-id", default="report-123", help="Stream ID")
-    args = parser.parse_args()
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.connect((args.host, args.port))
-        print(f"Connected to gateway at {args.host}:{args.port}")
-        read_and_send(args.dataset, args.batch_size, sock, args.stream_id)
-
-    print("Client finished.")
+    try:
+        # Cargar configuración
+        config = load_config()
+        
+        dataset_path = config['dataset_path']
+        host = config['host']
+        port = config['port']
+        batch_size = config['batch_size']
+        
+        print(f"Configuración cargada:")
+        print(f"  Dataset: {dataset_path}")
+        print(f"  Servidor: {host}:{port}")
+        print(f"  Tamaño de batch: {batch_size}")
+        
+        # Encontrar todos los archivos CSV
+        csv_files = find_csv_files(dataset_path)
+        print(f"\nEncontrados {len(csv_files)} archivo(s) CSV para procesar:")
+        for csv_file in csv_files:
+            print(f"  - {os.path.basename(csv_file)}")
+        
+        # Usar la clase Client con context manager
+        with Client(host, port) as client:
+            print(f"\n✓ Conectado al servidor en {host}:{port}")
+            
+            # Procesar cada archivo CSV
+            for i, csv_file in enumerate(csv_files, 1):
+                print(f"\n[{i}/{len(csv_files)}] Procesando: {os.path.basename(csv_file)}")
+                read_and_send(csv_file, batch_size, client)
+            
+            # Opcional: recibir respuesta final del servidor
+            try:
+                print("\nEsperando respuesta del servidor...")
+                response = client.receive_response()
+                print(f"Respuesta del servidor: {response}")
+            except Exception as e:
+                print(f"No se pudo recibir respuesta del servidor: {e}")
+        
+        print("\n✓ Cliente terminó el procesamiento de todos los archivos.")
+        
+    except (FileNotFoundError, ValueError) as e:
+        print(f"✗ Error de configuración: {e}")
+        return 1
+    except ConnectionError as e:
+        print(f"✗ Error de conexión: {e}")
+        return 1
+    except Exception as e:
+        print(f"✗ Error inesperado: {e}")
+        return 1
+    
+    return 0
 
 if __name__ == "__main__":
     main()
