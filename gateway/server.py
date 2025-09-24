@@ -2,6 +2,7 @@ import socket
 import struct
 from datetime import datetime, timezone
 from processor import process_batch_by_type
+from serializer import serialize_message
 
 HOST = "0.0.0.0"
 PORT = 9000
@@ -190,7 +191,7 @@ def parse_item(data, offset, entity_type):
     
     return item, offset
 
-def handle_client(conn, addr):
+def handle_client(conn, addr, mq_map):
     print(f"[GATEWAY] Conexión de {addr}")
     buffer = b""
     batch_id = 0
@@ -223,8 +224,24 @@ def handle_client(conn, addr):
                         total_processed += len(processed_items)
                         print(f"[GATEWAY] Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
                         print(f"[GATEWAY] Total procesado hasta ahora: {total_processed} registros")
-                        
-                        # Aquí podrías guardar los datos procesados (archivo/DB). No imprimir cada item para evitar ruido.
+
+                        # Serializar y enviar al middleware
+                        msg = serialize_message(
+                            processed_items,
+                            stream_id="default",
+                            batch_id=f"b{batch_id:04d}",
+                            is_batch_end=True,
+                            is_eos=False
+                        )
+                        # Seleccionar cola por tipo de entidad
+                        target_mq = mq_map.get(entity_type)
+                        if not target_mq:
+                            print(f"[GATEWAY] No hay cola configurada para tipo {entity_type}, descartando batch")
+                        else:
+                            try:
+                                target_mq.send(msg)
+                            except Exception as e:
+                                print(f"[GATEWAY] Error enviando al middleware ({entity_type}): {e}")
 
                 except ValueError as e:
                     # Si faltan datos del batch, esperar más datos sin limpiar el buffer
