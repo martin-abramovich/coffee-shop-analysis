@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import pika 
 
 class MessageMiddlewareMessageError(Exception):
     pass
@@ -51,8 +52,146 @@ class MessageMiddleware(ABC):
 
 class MessageMiddlewareExchange(MessageMiddleware):
 	def __init__(self, host, exchange_name, route_keys):
-		pass
+		self.host = host
+		self.exchange_name = exchange_name
+		self.route_keys = route_keys
 
+		try:
+			self.connection = pika.BlockingConnection(
+				pika.ConnectionParameters(host=self.host)
+			)
+			self.channel = self.connection.channel()
+			self.channel.exchange_declare(exchange=self.exchange_name, exchange_type="topic")
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("No se pudo conectar al middleware.")
+
+	def start_consuming(self, on_message_callback):
+		try:
+			# Cola temporal para consumir mensajes del exchange
+			result = self.channel.queue_declare(queue="", exclusive=True)
+			queue_name = result.method.queue
+
+			for key in self.route_keys:
+				self.channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=key)
+
+			def wrapper_callback(ch, method, properties, body):
+				try:
+					on_message_callback(body)
+					ch.basic_ack(delivery_tag=method.delivery_tag)  
+				except Exception as e:
+					ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+					# print(f"Error procesando mensaje: {e}")
+
+			self.channel.basic_consume(
+				queue=queue_name,
+				on_message_callback=wrapper_callback,
+				auto_ack=False 
+			)
+
+			self.channel.start_consuming()
+
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
+		except Exception as e:
+			raise MessageMiddlewareMessageError(f"Error inesperado: {e}")
+
+	def stop_consuming(self):
+		try:
+			self.channel.stop_consuming()
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
+
+	def send(self, message):
+		try:
+			for key in self.route_keys:
+				self.channel.basic_publish(
+					exchange=self.exchange_name,
+					routing_key=key,
+					body=message
+				)
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
+		except Exception as e:
+			raise MessageMiddlewareMessageError(f"Error enviando mensaje: {e}")
+
+	def close(self):
+		try:
+			self.connection.close()
+		except Exception as e:
+			raise MessageMiddlewareCloseError(f"Error cerrando la conexión: {e}")
+
+	def delete(self):
+		try:
+			self.channel.exchange_delete(exchange=self.exchange_name)
+		except Exception as e:
+			raise MessageMiddlewareDeleteError(f"No se pudo eliminar el exchange: {e}")
+		
 class MessageMiddlewareQueue(MessageMiddleware):
 	def __init__(self, host, queue_name):
-		pass
+		self.host = host
+		self.queue_name = queue_name
+
+		try:
+			self.connection = pika.BlockingConnection(
+				pika.ConnectionParameters(host=self.host)
+			)
+			self.channel = self.connection.channel()
+			self.channel.basic_qos(prefetch_count=1)
+			self.channel.queue_declare(queue=self.queue_name)
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("No se pudo conectar al middleware.")
+
+
+	def start_consuming(self, on_message_callback):
+		try:
+			def wrapper_callback(ch, method, properties, body):
+				try:
+					on_message_callback(body)
+					ch.basic_ack(delivery_tag=method.delivery_tag)
+				except Exception as e:
+					ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+					# print(f"Error procesando mensaje: {e}")
+
+			self.channel.basic_consume(
+			queue=self.queue_name,
+			on_message_callback=wrapper_callback,
+			auto_ack=False 
+			)
+
+			self.channel.start_consuming()
+
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
+		except Exception as e:
+			raise MessageMiddlewareMessageError(f"Error inesperado: {e}")
+
+
+	def stop_consuming(self):
+		try:
+			self.channel.stop_consuming()
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
+
+	def send(self, message):
+		try:
+			self.channel.basic_publish(
+				exchange="",
+				routing_key=self.queue_name,
+				body=message
+			)
+		except pika.exceptions.AMQPConnectionError:
+			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
+		except Exception as e:
+			raise MessageMiddlewareMessageError(f"Error enviando mensaje: {e}")
+
+	def close(self):
+		try:
+			self.connection.close()
+		except Exception as e:
+			raise MessageMiddlewareCloseError(f"Error cerrando la conexión: {e}")
+
+	def delete(self):
+		try:
+			self.channel.queue_delete(queue=self.queue_name)
+		except Exception as e:
+			raise MessageMiddlewareDeleteError(f"No se pudo eliminar la cola: {e}")
