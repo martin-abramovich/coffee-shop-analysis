@@ -3,7 +3,7 @@ import logging
 import sys
 import os
 from server import handle_client
-from middleware.middleware import MessageMiddlewareQueue
+from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 
 # Configurar logging
 logging.basicConfig(
@@ -25,13 +25,23 @@ def main():
     # Inicializar conexiones de salida al middleware por tipo de entidad
     mq_map = {}
     try:
-        mq_map["transactions"] = MessageMiddlewareQueue(host="localhost", queue_name="transactions_raw")
-        mq_map["transaction_items"] = MessageMiddlewareQueue(host="localhost", queue_name="transaction_items_raw")
+        # Exchanges para datos compartidos (fanout a múltiples workers)
+        mq_map["transactions"] = MessageMiddlewareExchange(
+            host="localhost", 
+            exchange_name="transactions_raw",
+            route_keys=["q1", "q4"]  # Q1 (ID & Amount) y Q4 (Birthday)
+        )
+        mq_map["transaction_items"] = MessageMiddlewareExchange(
+            host="localhost", 
+            exchange_name="transaction_items_raw",
+            route_keys=["q2", "q3"]  # Q2 (Productos más vendidos) y Q3 (TPV)
+        )
+        # Queues simples para datos de lookup (usados solo para joins al final)
         mq_map["users"] = MessageMiddlewareQueue(host="localhost", queue_name="users_raw")
         mq_map["stores"] = MessageMiddlewareQueue(host="localhost", queue_name="stores_raw")
         mq_map["menu_items"] = MessageMiddlewareQueue(host="localhost", queue_name="menu_items_raw")
     except Exception as e:
-        logger.error(f"No se pudo inicializar colas del middleware: {e}")
+        logger.error(f"No se pudo inicializar colas/exchanges del middleware: {e}")
         return
 
     try:
