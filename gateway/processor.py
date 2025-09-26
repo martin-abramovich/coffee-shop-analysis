@@ -1,11 +1,124 @@
 from entities_clean import MenuItemShort, StoreShort, UserShort, Transactions, TransactionItems
 import logging
+from datetime import datetime
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class ValidationError(Exception):
+    """Excepción para errores de validación de datos"""
+    pass
+
+def validate_transaction(item: dict) -> None:
+    """Valida que una transacción tenga todos los campos requeridos y válidos"""
+    required_fields = ['transaction_id', 'store_id', 'user_id', 'final_amount', 'created_at']
+    
+    for field in required_fields:
+        if field not in item or item[field] is None or item[field] == '':
+            raise ValidationError(f"Campo requerido '{field}' faltante o vacío")
+    
+    # Validar que final_amount sea un número positivo
+    try:
+        amount = float(item['final_amount'])
+        if amount < 0:
+            raise ValidationError(f"final_amount debe ser positivo, recibido: {amount}")
+    except (ValueError, TypeError):
+        raise ValidationError(f"final_amount debe ser un número válido, recibido: {item['final_amount']}")
+    
+    # Validar formato de transaction_id (no vacío, sin espacios)
+    if not item['transaction_id'].strip():
+        raise ValidationError("transaction_id no puede estar vacío")
+    
+    # Validar formato de created_at (ISO string)
+    try:
+        datetime.fromisoformat(item['created_at'].replace('Z', '+00:00'))
+    except ValueError:
+        raise ValidationError(f"created_at debe ser formato ISO válido, recibido: {item['created_at']}")
+
+def validate_user(item: dict) -> None:
+    """Valida que un usuario tenga todos los campos requeridos y válidos"""
+    required_fields = ['user_id', 'birthdate']
+    
+    for field in required_fields:
+        if field not in item or item[field] is None or item[field] == '':
+            raise ValidationError(f"Campo requerido '{field}' faltante o vacío")
+    
+    # Validar formato de user_id (no vacío)
+    if not item['user_id'].strip():
+        raise ValidationError("user_id no puede estar vacío")
+    
+    # Validar formato de birthdate (ISO date)
+    try:
+        datetime.fromisoformat(item['birthdate']).date()
+    except ValueError:
+        raise ValidationError(f"birthdate debe ser formato ISO date válido, recibido: {item['birthdate']}")
+
+def validate_store(item: dict) -> None:
+    """Valida que una tienda tenga todos los campos requeridos y válidos"""
+    required_fields = ['store_id', 'store_name']
+    
+    for field in required_fields:
+        if field not in item or item[field] is None or item[field] == '':
+            raise ValidationError(f"Campo requerido '{field}' faltante o vacío")
+    
+    # Validar que store_name no esté vacío
+    if not item['store_name'].strip():
+        raise ValidationError("store_name no puede estar vacío")
+
+def validate_menu_item(item: dict) -> None:
+    """Valida que un item del menú tenga todos los campos requeridos y válidos"""
+    required_fields = ['item_id', 'item_name', 'price']
+    
+    for field in required_fields:
+        if field not in item or item[field] is None or item[field] == '':
+            raise ValidationError(f"Campo requerido '{field}' faltante o vacío")
+    
+    # Validar que price sea un número positivo
+    try:
+        price = float(item['price'])
+        if price < 0:
+            raise ValidationError(f"price debe ser positivo, recibido: {price}")
+    except (ValueError, TypeError):
+        raise ValidationError(f"price debe ser un número válido, recibido: {item['price']}")
+    
+    # Validar que item_name no esté vacío
+    if not item['item_name'].strip():
+        raise ValidationError("item_name no puede estar vacío")
+
+def validate_transaction_item(item: dict) -> None:
+    """Valida que un item de transacción tenga todos los campos requeridos y válidos"""
+    required_fields = ['transaction_id', 'item_id', 'quantity', 'subtotal', 'created_at']
+    
+    for field in required_fields:
+        if field not in item or item[field] is None or item[field] == '':
+            raise ValidationError(f"Campo requerido '{field}' faltante o vacío")
+    
+    # Validar que quantity sea un entero positivo
+    try:
+        qty = int(item['quantity'])
+        if qty <= 0:
+            raise ValidationError(f"quantity debe ser positivo, recibido: {qty}")
+    except (ValueError, TypeError):
+        raise ValidationError(f"quantity debe ser un entero válido, recibido: {item['quantity']}")
+    
+    # Validar que subtotal sea un número positivo
+    try:
+        subtotal = float(item['subtotal'])
+        if subtotal < 0:
+            raise ValidationError(f"subtotal debe ser positivo, recibido: {subtotal}")
+    except (ValueError, TypeError):
+        raise ValidationError(f"subtotal debe ser un número válido, recibido: {item['subtotal']}")
+    
+    # Validar formato de created_at (ISO string)
+    try:
+        datetime.fromisoformat(item['created_at'].replace('Z', '+00:00'))
+    except ValueError:
+        raise ValidationError(f"created_at debe ser formato ISO válido, recibido: {item['created_at']}")
+
 def reduce_transaction(row: dict) -> Transactions:
+    """Reduce y valida una transacción a la entidad simplificada"""
+    validate_transaction(row)
     return Transactions(
         transaction_id=row["transaction_id"],
         store_id=row["store_id"],
@@ -15,101 +128,55 @@ def reduce_transaction(row: dict) -> Transactions:
     )
 
 def reduce_user(row: dict) -> UserShort:
+    """Reduce y valida un usuario a la entidad simplificada"""
+    validate_user(row)
     return UserShort(
         user_id=row["user_id"],
-        birthdate=row["birthdate"],  # Mantener como string por simplicidad
+        birthdate=row["birthdate"],
     )
 
 def reduce_store(row: dict) -> StoreShort:
+    """Reduce y valida una tienda a la entidad simplificada"""
+    validate_store(row)
     return StoreShort(
         store_id=row["store_id"],
         store_name=row["store_name"],
     )
 
 def reduce_menu_item(row: dict) -> MenuItemShort:
+    """Reduce y valida un item del menú a la entidad simplificada"""
+    validate_menu_item(row)
     return MenuItemShort(
         item_id=row["item_id"],
         item_name=row["item_name"],
-        category=row["category"],
         price=float(row["price"]),
     )
 
 def reduce_transaction_item(row: dict) -> TransactionItems:
+    """Reduce y valida un item de transacción a la entidad simplificada"""
+    validate_transaction_item(row)
     return TransactionItems(
         transaction_id=row["transaction_id"],
         item_id=row["item_id"],
         quantity=int(row["quantity"]),
-        unit_price=float(row["unit_price"]),
         subtotal=float(row["subtotal"]),
-        created_at=row["created_at"],  # Mantener como string por simplicidad
+        created_at=row["created_at"],
     )
 
-def determine_data_type(row: dict) -> str:
-    """
-    Determina el tipo de datos basado en las columnas presentes en la fila.
-    """
-    if not row:
-        return "unknown"
-    
-    # Claves específicas para cada tipo de entidad
-    if "transaction_id" in row and "store_id" in row and "user_id" in row:
-        if "item_id" in row and "quantity" in row:
-            return "transaction_items"
-        else:
-            return "transactions"
-    elif "user_id" in row and "birthdate" in row and "registered_at" in row:
-        return "users"
-    elif "store_id" in row and "store_name" in row and "city" in row:
-        return "stores"
-    elif "item_id" in row and "item_name" in row and "category" in row:
-        return "menu_items"
-    else:
-        return "unknown"
-
-def process_data_by_type(rows: list, data_type: str) -> list:
-    """
-    Procesa las filas según el tipo de datos identificado.
-    Aplica validación y limpieza según sea necesario.
-    """
-    if not rows:
-        return []
-    
-    processed = []
-    
-    for row in rows:
-        try:
-            if data_type == "transactions":
-                processed.append(reduce_transaction(row))
-            elif data_type == "users":
-                processed.append(reduce_user(row))
-            elif data_type == "stores":
-                processed.append(reduce_store(row))
-            elif data_type == "menu_items":
-                processed.append(reduce_menu_item(row))
-            elif data_type == "transaction_items":
-                processed.append(reduce_transaction_item(row))
-            else:
-                logger.warning(f"Tipo de datos desconocido: {data_type}, saltando fila")
-                continue
-                
-        except Exception as e:
-            logger.error(f"Error procesando fila {row}: {e}")
-            continue
-    
-    logger.info(f"Procesados {len(processed)} registros de tipo {data_type}")
-    return processed
 
 def process_batch_by_type(items: list, data_type: str) -> list:
     """
     Procesa un batch de items según el tipo de datos.
-    Versión optimizada para el protocolo binario.
+    Aplica validación y manejo de errores robusto.
     """
     if not items:
         return []
     
     processed = []
+    validation_errors = 0
+    processing_errors = 0
     
-    for item in items:
+    for i, item in enumerate(items):
         try:
             if data_type == "transactions":
                 processed.append(reduce_transaction(item))
@@ -122,69 +189,24 @@ def process_batch_by_type(items: list, data_type: str) -> list:
             elif data_type == "transaction_items":
                 processed.append(reduce_transaction_item(item))
             else:
-                logger.warning(f"Tipo de datos desconocido: {data_type}, saltando item")
+                logger.warning(f"Tipo de datos desconocido: {data_type}, saltando item {i}")
                 continue
                 
+        except ValidationError as e:
+            validation_errors += 1
+            logger.warning(f"Validación fallida para item {i} de tipo {data_type}: {e}")
+            continue
         except Exception as e:
-            logger.error(f"Error procesando item {item}: {e}")
+            processing_errors += 1
+            logger.error(f"Error procesando item {i} de tipo {data_type}: {e}")
             continue
     
-    logger.info(f"Procesados {len(processed)} registros de tipo {data_type}")
+    # Log de estadísticas del batch
+    total_items = len(items)
+    successful = len(processed)
+    logger.info(f"Batch procesado - Tipo: {data_type}, Total: {total_items}, "
+                f"Exitosos: {successful}, Errores validación: {validation_errors}, "
+                f"Errores procesamiento: {processing_errors}")
+    
     return processed
 
-def validate_and_clean_data(row: dict, data_type: str) -> dict:
-    """
-    Valida y limpia los datos según el tipo.
-    Versión simplificada sin conversiones complejas de fechas.
-    """
-    cleaned_row = {}
-    
-    for key, value in row.items():
-        if value is None or value == "":
-            continue
-            
-        # Limpiar espacios en blanco
-        if isinstance(value, str):
-            value = value.strip()
-            
-        # Validaciones básicas por tipo
-        if data_type == "transactions":
-            if key in ["original_amount", "discount_applied", "final_amount"]:
-                try:
-                    cleaned_row[key] = float(value)
-                except ValueError:
-                    logger.warning(f"Valor inválido para {key}: {value}")
-                    continue
-            else:
-                cleaned_row[key] = value
-                
-        elif data_type == "transaction_items":
-            if key in ["quantity"]:
-                try:
-                    cleaned_row[key] = int(value)
-                except ValueError:
-                    logger.warning(f"Valor inválido para {key}: {value}")
-                    continue
-            elif key in ["unit_price", "subtotal"]:
-                try:
-                    cleaned_row[key] = float(value)
-                except ValueError:
-                    logger.warning(f"Valor inválido para {key}: {value}")
-                    continue
-            else:
-                cleaned_row[key] = value
-                
-        elif data_type == "menu_items":
-            if key == "price":
-                try:
-                    cleaned_row[key] = float(value)
-                except ValueError:
-                    logger.warning(f"Valor inválido para {key}: {value}")
-                    continue
-            else:
-                cleaned_row[key] = value
-                
-        else:
-            cleaned_row[key] = value
-    
-    return cleaned_row
