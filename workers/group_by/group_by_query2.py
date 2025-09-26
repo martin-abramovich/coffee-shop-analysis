@@ -37,14 +37,14 @@ def group_by_month_and_item(rows):
     for r in rows:
         # Validar datos requeridos
         created_at = r.get("created_at")
-        item_name = r.get("item_name")
+        item_id = r.get("item_id")  # CAMBIO: usar item_id en lugar de item_name
         
-        if not created_at or not item_name or not item_name.strip():
+        if not created_at or not item_id or not item_id.strip():
             continue
         
         try:
             month = parse_month(created_at)
-            normalized_item_name = item_name.strip()
+            normalized_item_id = item_id.strip()
             
             # Extraer quantity y subtotal de la fila
             quantity = r.get("quantity", 0)
@@ -56,8 +56,8 @@ def group_by_month_and_item(rows):
             if isinstance(subtotal, str):
                 subtotal = float(subtotal) if subtotal else 0.0
             
-            # Clave compuesta: (mes, item_name)
-            key = (month, normalized_item_name)
+            # Clave compuesta: (mes, item_id)
+            key = (month, normalized_item_id)
             
             # Acumular métricas
             metrics[key]['total_quantity'] += quantity
@@ -71,22 +71,33 @@ def group_by_month_and_item(rows):
 
 def on_message(body):
     header, rows = deserialize_message(body)
+    
+    # Verificar si es mensaje de End of Stream
+    if header.get("is_eos") == "true":
+        print("[GroupByQuery2] End of Stream recibido. Reenviando...")
+        # Reenviar EOS a workers downstream
+        eos_msg = serialize_message([], header)
+        mq_out.send(eos_msg)
+        print("[GroupByQuery2] EOS reenviado a workers downstream")
+        return
+    
+    # Procesamiento normal
     total_in = len(rows)
     
-    # Agrupar por (mes, item_name) y calcular métricas
+    # Agrupar por (mes, item_id) y calcular métricas
     month_item_metrics = group_by_month_and_item(rows)
     
-    # Enviar cada combinación (mes, item) por separado
+    # Enviar cada combinación (mes, item_id) por separado
     groups_sent = 0
     total_quantity = 0
     total_subtotal = 0.0
     
-    for (month, item_name), metrics in month_item_metrics.items():
+    for (month, item_id), metrics in month_item_metrics.items():
         if metrics['total_quantity'] > 0 or metrics['total_subtotal'] > 0:
-            # Crear un registro único con las métricas de (mes, item)
+            # Crear un registro único con las métricas de (mes, item_id)
             query2_record = {
                 'month': month,
-                'item_name': item_name,
+                'item_id': item_id,  # CAMBIO: enviar item_id en lugar de item_name
                 'total_quantity': metrics['total_quantity'],
                 'total_subtotal': metrics['total_subtotal']
             }
@@ -94,9 +105,9 @@ def on_message(body):
             # Agregar información del grupo al header
             group_header = header.copy() if header else {}
             group_header["group_by"] = "month_item"
-            group_header["group_key"] = f"{month}|{item_name}"
+            group_header["group_key"] = f"{month}|{item_id}"
             group_header["month"] = month
-            group_header["item_name"] = item_name
+            group_header["item_id"] = item_id  # CAMBIO: item_id en header
             group_header["group_size"] = 1
             group_header["metrics_type"] = "query2_aggregated"
             

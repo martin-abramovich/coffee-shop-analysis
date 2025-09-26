@@ -28,6 +28,17 @@ def filter_by_amount(rows, threshold: float):
 
 def on_message(body):
     header, rows = deserialize_message(body)
+    
+    # Verificar si es mensaje de End of Stream
+    if header.get("is_eos") == "true":
+        print("[FilterByAmount] End of Stream recibido. Reenviando...")
+        # Reenviar EOS a workers downstream
+        eos_msg = serialize_message([], header)
+        mq_out.send(eos_msg)
+        print("[FilterByAmount] EOS reenviado a workers downstream")
+        return
+    
+    # Procesamiento normal
     total_in = len(rows)
     filtered = filter_by_amount(rows, THRESHOLD)
     if filtered:

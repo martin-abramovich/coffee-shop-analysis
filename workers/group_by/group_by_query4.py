@@ -41,6 +41,17 @@ def group_by_store_and_user(rows):
 
 def on_message(body):
     header, rows = deserialize_message(body)
+    
+    # Verificar si es mensaje de End of Stream
+    if header.get("is_eos") == "true":
+        print("[GroupByQuery4] End of Stream recibido. Reenviando...")
+        # Reenviar EOS a workers downstream
+        eos_msg = serialize_message([], header)
+        mq_out.send(eos_msg)
+        print("[GroupByQuery4] EOS reenviado a workers downstream")
+        return
+    
+    # Procesamiento normal
     total_in = len(rows)
     
     # Agrupar por (store_id, user_id) y contar transacciones

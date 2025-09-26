@@ -75,6 +75,17 @@ def group_by_semester_and_store(rows):
 
 def on_message(body):
     header, rows = deserialize_message(body)
+    
+    # Verificar si es mensaje de End of Stream
+    if header.get("is_eos") == "true":
+        print("[GroupByQuery3] End of Stream recibido. Reenviando...")
+        # Reenviar EOS a workers downstream
+        eos_msg = serialize_message([], header)
+        mq_out.send(eos_msg)
+        print("[GroupByQuery3] EOS reenviado a workers downstream")
+        return
+    
+    # Procesamiento normal
     total_in = len(rows)
     
     # Agrupar por (semestre, store_id) y calcular TPV

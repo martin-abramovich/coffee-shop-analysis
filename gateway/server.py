@@ -261,6 +261,22 @@ def handle_client(conn, addr, mq_map):
     except Exception as e:
         print(f"[GATEWAY] Error en conexión con {addr}: {e}")
     finally:
+        # Enviar EOS (End of Stream) a todas las colas cuando termina el cliente
+        print(f"[GATEWAY] Enviando End of Stream a todas las colas...")
+        for entity_type, mq in mq_map.items():
+            try:
+                eos_msg = serialize_message(
+                    [], 
+                    stream_id="default",
+                    batch_id="EOS", 
+                    is_batch_end=True,
+                    is_eos=True
+                )
+                mq.send(eos_msg)
+                print(f"[GATEWAY] EOS enviado a cola {entity_type}")
+            except Exception as e:
+                print(f"[GATEWAY] Error enviando EOS a {entity_type}: {e}")
+        
         # Enviar ACK final al cliente (4 bytes longitud + payload UTF-8)
         try:
             summary = f"OK batches={batch_count} total_records={total_processed}"

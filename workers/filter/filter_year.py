@@ -26,10 +26,22 @@ def filter_by_year(rows):
 
 def on_message(body):
     header, rows = deserialize_message(body)
+    
+    # Verificar si es mensaje de End of Stream
+    if header.get("is_eos") == "true":
+        print("[FilterByYear] End of Stream recibido. Reenviando...")
+        # Reenviar EOS a workers downstream
+        eos_msg = serialize_message([], header)
+        mq_out.send(eos_msg)
+        print("[FilterByYear] EOS reenviado a workers downstream")
+        return
+    
+    # Procesamiento normal
     filtered = filter_by_year(rows)
     if filtered:
         out_msg = serialize_message(filtered, header)
         mq_out.send(out_msg)
+        print(f"[FilterByYear] Procesadas {len(filtered)} transacciones de {len(rows)}")
 
 if __name__ == "__main__":
     # Entrada: cola directa (balanceo entre workers)
