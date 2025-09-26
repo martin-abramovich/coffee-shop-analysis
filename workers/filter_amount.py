@@ -1,11 +1,12 @@
 from middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 
-# --- Configuración (hardcodeada por ahora) ---
+# --- Configuración ---
 RABBIT_HOST = "localhost"
-INPUT_QUEUE = "transactions_raw"
-OUTPUT_EXCHANGE = "transactions_amount"
-ROUTING_KEY = "amount"
+INPUT_EXCHANGE = "transactions_hour"     # exchange del filtro por hora
+INPUT_ROUTING_KEY = "hour"               # routing key del filtro por hora
+OUTPUT_EXCHANGE = "transactions_amount"  # exchange de salida para amount
+ROUTING_KEY = "amount"                   # routing para topic
 THRESHOLD = 75.0
 
 def filter_by_amount(rows, threshold: float):
@@ -37,7 +38,10 @@ def on_message(body):
     print(f"[FilterAmount] in={total_in} kept={kept} dropped={dropped} threshold>={THRESHOLD}")
 
 if __name__ == "__main__":
-    mq_in = MessageMiddlewareQueue(RABBIT_HOST, INPUT_QUEUE)
+    # Entrada: suscripción al exchange del filtro por hora
+    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
+    
+    # Salida: exchange para datos filtrados por amount
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
 
     print("[*] FilterWorkerAmount esperando mensajes...")
