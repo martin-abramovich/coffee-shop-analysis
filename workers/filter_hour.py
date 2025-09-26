@@ -4,7 +4,8 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = "localhost"
-INPUT_QUEUE = "transactions_raw"         # misma cola de entrada (o una específica si preferís)
+INPUT_EXCHANGE = "transactions_year"     # exchange del filtro por año
+INPUT_ROUTING_KEY = "year"               # routing key del filtro por año
 OUTPUT_EXCHANGE = "transactions_hour"    # exchange de salida para horas
 ROUTING_KEY = "hour"                     # routing para topic
 
@@ -54,8 +55,8 @@ def on_message(body):
     print(f"[FilterHour] in={total_in} kept={kept} dropped={dropped} window=[{START_HOUR}-{END_HOUR}]")
 
 if __name__ == "__main__":
-    # Entrada: cola directa (balanceo entre workers)
-    mq_in = MessageMiddlewareQueue(RABBIT_HOST, INPUT_QUEUE)
+    # Entrada: suscripción al exchange del filtro por año
+    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
 
     # Salida: exchange (fanout/route)
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
