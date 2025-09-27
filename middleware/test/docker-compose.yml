@@ -1,0 +1,88 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 2s
+      retries: 10
+
+  consumer1:
+    build:
+      context: ../   
+      dockerfile: test/dockerfile
+    command: ["python", "consumer.py"]
+    environment:
+      - MODE=queue
+      - QUEUE_NAME=test_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  consumer2:
+    build:
+      context: ../   
+      dockerfile: test/dockerfile
+    command: ["python", "consumer.py"]
+    environment:
+      - MODE=queue
+      - QUEUE_NAME=test_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  consumer1_exchange:
+    build:
+      context: ../   
+      dockerfile: test/dockerfile
+    command: ["python", "consumer.py"]
+    environment:
+      - MODE=exchange
+      - EXCHANGE_NAME=test_exchange
+      - ROUTE_KEYS=test.key
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    
+  consumer2_exchange:
+    build:
+      context: ../   
+      dockerfile: test/dockerfile
+    command: ["python", "consumer.py"]
+    environment:
+      - MODE=exchange
+      - EXCHANGE_NAME=test_exchange
+      - ROUTE_KEYS=test.key
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+
+  producer_exchange:
+    build:
+      context: ../   
+      dockerfile: test/dockerfile
+    command: ["python", "producer.py"]
+    environment:
+      - MODE=exchange
+      - EXCHANGE_NAME=test_exchange
+      - ROUTE_KEYS=test.key
+      - N_MESSAGES=4
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  producer:
+    build:
+      context: ../   
+      dockerfile: test/dockerfile
+    command: ["python", "producer.py"]
+    environment:
+      - MODE=queue
+      - QUEUE_NAME=test_queue
+      - N_MESSAGES=4
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
