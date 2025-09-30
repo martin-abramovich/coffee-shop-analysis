@@ -5,6 +5,10 @@ import glob
 import configparser
 import signal
 import sys
+import threading
+import queue
+import time
+from typing import List, Tuple
 
 # Variable global para el cliente (necesario para signal handler)
 global_client = None
@@ -57,11 +61,39 @@ def load_config(config_path="config.ini"):
         'log_format': config.get('LOGGING', 'log_format', fallback='%(asctime)s - %(levelname)s - %(message)s')
     }
 
+def find_csv_files_in_data_structure(data_path: str) -> List[str]:
+    """
+    Encuentra todos los archivos CSV en la estructura de datos de .data/
+    Busca recursivamente en todas las subcarpetas.
+    """
+    csv_files = []
+    
+    if not os.path.exists(data_path):
+        raise ValueError(f"La ruta de datos {data_path} no existe")
+    
+    if not os.path.isdir(data_path):
+        raise ValueError(f"La ruta {data_path} no es un directorio")
+    
+    # Buscar recursivamente en todas las subcarpetas
+    for root, dirs, files in os.walk(data_path):
+        # Saltar archivos ZIP y directorios que no queremos
+        if 'dataset.zip' in files:
+            continue
+            
+        for file in files:
+            if file.endswith('.csv'):
+                csv_files.append(os.path.join(root, file))
+    
+    if not csv_files:
+        raise ValueError(f"No se encontraron archivos CSV en {data_path}")
+    
+    # Ordenar para procesamiento consistente
+    return sorted(csv_files)
+
 def find_csv_files(dataset_path):
     """
-    Encuentra todos los archivos CSV en el directorio especificado.
-    Si dataset_path es un archivo, devuelve una lista con ese archivo.
-    Si es un directorio, devuelve todos los archivos .csv en ese directorio.
+    Encuentra todos los archivos CSV. Mantiene compatibilidad con versión anterior
+    pero prioriza la estructura de .data/
     """
     if os.path.isfile(dataset_path):
         if dataset_path.endswith('.csv'):
@@ -69,53 +101,171 @@ def find_csv_files(dataset_path):
         else:
             raise ValueError(f"El archivo {dataset_path} no es un archivo CSV")
     elif os.path.isdir(dataset_path):
-        csv_files = glob.glob(os.path.join(dataset_path, "*.csv"))
-        if not csv_files:
-            raise ValueError(f"No se encontraron archivos CSV en el directorio {dataset_path}")
-        return sorted(csv_files)  # Ordenar para procesamiento consistente
+        # Si es la carpeta .data, usar nueva función
+        if dataset_path.endswith('.data') or '.data' in dataset_path:
+            return find_csv_files_in_data_structure(dataset_path)
+        else:
+            # Comportamiento original para otros directorios
+            csv_files = glob.glob(os.path.join(dataset_path, "*.csv"))
+            if not csv_files:
+                raise ValueError(f"No se encontraron archivos CSV en el directorio {dataset_path}")
+            return sorted(csv_files)
     else:
         raise ValueError(f"La ruta {dataset_path} no existe o no es válida")
 
-def read_and_send(csv_file_path: str, batch_size: int, client: Client):
+def csv_reader_thread(csv_files: List[str], batch_size: int, data_queue: queue.Queue, stop_event: threading.Event):
     """
-    Lee un archivo CSV y envía los datos en batches usando el protocolo binario.
+    Thread que lee archivos CSV y coloca los batches en la cola.
     """
-    # Detectar tipo de entidad desde el nombre del archivo
-    try:
-        entity_type = detect_entity_type_from_filename(os.path.basename(csv_file_path))
-        print(f"  Tipo detectado: {entity_type}")
-    except ValueError as e:
-        print(f"  Error detectando tipo: {e}")
-        print(f"  Intentando detectar desde cabeceras...")
-        entity_type = None  # Se detectará automáticamente
-    
-    batch_count = 0
-    total_entities = 0
+    print("🔍 Hilo lector iniciado")
     
     try:
-        for batch in entity_batch_iterator(csv_file_path, batch_size, entity_type):
-            # Verificar si se solicitó el cierre
-            if client.is_shutdown_requested():
-                print(f"  ⚠️  Cierre solicitado durante procesamiento de {os.path.basename(csv_file_path)}")
-                print(f"  📊 Progreso: {batch_count} batches, {total_entities} entidades enviadas")
-                return
+        for i, csv_file_path in enumerate(csv_files, 1):
+            if stop_event.is_set():
+                print(f"  ⚠️  Hilo lector detenido. Archivos procesados: {i-1}/{len(csv_files)}")
+                break
+                
+            print(f"  [{i}/{len(csv_files)}] Leyendo: {os.path.basename(csv_file_path)}")
             
-            client.send_batch(batch)
-            batch_count += 1
-            total_entities += len(batch)
-            print(f"  Enviado batch {batch_count}, entidades: {len(batch)}")
+            # Detectar tipo de entidad desde el nombre del archivo
+            try:
+                entity_type = detect_entity_type_from_filename(os.path.basename(csv_file_path))
+                print(f"    Tipo detectado: {entity_type}")
+            except ValueError as e:
+                print(f"    Error detectando tipo: {e}")
+                print(f"    Intentando detectar desde cabeceras...")
+                entity_type = None  # Se detectará automáticamente
+            
+            batch_count = 0
+            
+            try:
+                for batch in entity_batch_iterator(csv_file_path, batch_size, entity_type):
+                    if stop_event.is_set():
+                        print(f"    ⚠️  Detención solicitada durante lectura de {os.path.basename(csv_file_path)}")
+                        break
+                    
+                    # Enviar batch a la cola
+                    data_queue.put(('batch', batch, csv_file_path))
+                    batch_count += 1
+                    print(f"    Batch {batch_count} leído, entidades: {len(batch)}")
+                
+                if not stop_event.is_set():
+                    print(f"    ✓ Completada lectura: {batch_count} batches")
+                
+            except Exception as e:
+                print(f"    ✗ Error leyendo archivo: {e}")
+                data_queue.put(('error', str(e), csv_file_path))
+                continue
         
-        print(f"  ✓ Completado: {batch_count} batches, {total_entities} entidades totales")
+        # Señal de fin de datos
+        data_queue.put(('end', None, None))
+        print("🔍 Hilo lector terminado")
         
-    except RuntimeError as e:
-        if "proceso de cierre" in str(e):
-            print(f"  ⚠️  Cierre ordenado durante envío: {e}")
-            print(f"  📊 Progreso: {batch_count} batches, {total_entities} entidades enviadas")
-        else:
-            print(f"  ✗ Error de runtime: {e}")
-            raise
     except Exception as e:
-        print(f"  ✗ Error procesando archivo: {e}")
+        print(f"✗ Error crítico en hilo lector: {e}")
+        data_queue.put(('error', str(e), None))
+
+def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading.Event):
+    """
+    Thread que envía los batches al servidor.
+    """
+    print("📤 Hilo enviador iniciado")
+    
+    total_batches_sent = 0
+    total_entities_sent = 0
+    
+    try:
+        while not stop_event.is_set():
+            try:
+                # Esperar por datos con timeout
+                item = data_queue.get(timeout=1.0)
+                
+                if item[0] == 'end':
+                    print("📤 Fin de datos recibido")
+                    break
+                elif item[0] == 'error':
+                    print(f"📤 Error recibido del lector: {item[1]}")
+                    continue
+                elif item[0] == 'batch':
+                    _, batch, source_file = item
+                    
+                    if client.is_shutdown_requested():
+                        print("📤 Cierre solicitado durante envío")
+                        break
+                    
+                    client.send_batch(batch)
+                    total_batches_sent += 1
+                    total_entities_sent += len(batch)
+                    print(f"📤 Enviado batch {total_batches_sent}, entidades: {len(batch)} (de {os.path.basename(source_file)})")
+                    
+                    data_queue.task_done()
+                
+            except queue.Empty:
+                # Timeout normal, continuar verificando stop_event
+                continue
+            except Exception as e:
+                if "proceso de cierre" in str(e):
+                    print(f"📤 Cierre ordenado durante envío: {e}")
+                    break
+                else:
+                    print(f"📤 Error enviando batch: {e}")
+                    # En caso de error de envío, seguir intentando con los siguientes
+                    continue
+        
+        print(f"📤 Hilo enviador terminado. Total enviado: {total_batches_sent} batches, {total_entities_sent} entidades")
+        
+    except Exception as e:
+        print(f"✗ Error crítico en hilo enviador: {e}")
+
+def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client):
+    """
+    Coordina la lectura y envío usando dos threads separados.
+    """
+    print(f"\n🚀 Iniciando procesamiento con threading para {len(csv_files)} archivos")
+    
+    # Cola para comunicar entre threads
+    data_queue = queue.Queue(maxsize=50)  # Limitar tamaño para evitar usar mucha memoria
+    stop_event = threading.Event()
+    
+    # Crear threads
+    reader_thread = threading.Thread(
+        target=csv_reader_thread, 
+        args=(csv_files, batch_size, data_queue, stop_event),
+        name="CSVReader"
+    )
+    
+    sender_thread_obj = threading.Thread(
+        target=sender_thread,
+        args=(client, data_queue, stop_event),
+        name="DataSender"
+    )
+    
+    try:
+        # Iniciar threads
+        reader_thread.start()
+        sender_thread_obj.start()
+        
+        # Esperar a que terminen
+        reader_thread.join()
+        sender_thread_obj.join()
+        
+        print("🎉 Procesamiento threaded completado")
+        
+    except KeyboardInterrupt:
+        print("\n⚠️  Interrupción detectada, cerrando threads...")
+        stop_event.set()
+        client.request_shutdown()
+        
+        # Esperar a que los threads terminen
+        reader_thread.join(timeout=5)
+        sender_thread_obj.join(timeout=5)
+        
+        print("🛑 Threads cerrados por interrupción")
+        raise
+    
+    except Exception as e:
+        print(f"✗ Error en procesamiento threaded: {e}")
+        stop_event.set()
         raise
 
 
@@ -150,15 +300,8 @@ def main():
             global_client = client  # Asignar para signal handler
             print(f"\n✓ Conectado al servidor en {host}:{port}")
             
-            # Procesar cada archivo CSV
-            for i, csv_file in enumerate(csv_files, 1):
-                # Verificar si se solicitó el cierre
-                if client.is_shutdown_requested():
-                    print(f"\n⚠️  Cierre solicitado. Archivos procesados: {i-1}/{len(csv_files)}")
-                    break
-                    
-                print(f"\n[{i}/{len(csv_files)}] Procesando: {os.path.basename(csv_file)}")
-                read_and_send(csv_file, batch_size, client)
+            # Procesar archivos CSV usando threading
+            read_and_send_threaded(csv_files, batch_size, client)
             
             # Opcional: recibir respuesta final del servidor (solo si no hay cierre pendiente)
             if not client.is_shutdown_requested():

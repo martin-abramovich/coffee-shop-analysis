@@ -1,4 +1,3 @@
-import struct
 import csv
 from typing import List, Union, Optional
 from datetime import datetime, date
@@ -16,20 +15,63 @@ ENTITY_TYPES = {
 def encode_string(s: str) -> bytes:
     """Codifica un string: 4 bytes para tamaño + string en UTF-8"""
     s_bytes = s.encode('utf-8')
-    return struct.pack('>I', len(s_bytes)) + s_bytes
+    # Convertir longitud a 4 bytes big-endian manualmente
+    length = len(s_bytes)
+    length_bytes = length.to_bytes(4, byteorder='big', signed=False)
+    return length_bytes + s_bytes
 
 def encode_float(f: float) -> bytes:
-    """Codifica un float de 4 bytes"""
-    return struct.pack('>f', f)
+    """Codifica un float de 4 bytes usando representación IEEE 754 manual"""
+    # Implementación manual de IEEE 754 single precision
+    if f == 0.0:
+        return (0).to_bytes(4, byteorder='big', signed=False)
+    
+    # Manejar signo
+    sign = 0 if f >= 0 else 1
+    f = abs(f)
+    
+    # Casos especiales
+    if f == float('inf'):
+        return ((sign << 31) | 0x7F800000).to_bytes(4, byteorder='big', signed=False)
+    if f != f:  # NaN
+        return ((sign << 31) | 0x7FC00000).to_bytes(4, byteorder='big', signed=False)
+    
+    # Normalizar
+    if f >= 2.0:
+        exponent = 0
+        while f >= 2.0:
+            f /= 2.0
+            exponent += 1
+        exponent += 127  # Bias IEEE 754
+    elif f < 1.0:
+        exponent = 0
+        while f < 1.0 and exponent > -126:
+            f *= 2.0
+            exponent -= 1
+        exponent += 127  # Bias IEEE 754
+        if exponent <= 0:  # Número denormalizado
+            exponent = 0
+    else:
+        exponent = 127  # f está entre 1.0 y 2.0
+    
+    # Calcular mantisa (23 bits)
+    if exponent > 0:
+        mantissa = int((f - 1.0) * (1 << 23))
+    else:
+        mantissa = int(f * (1 << 23))
+    
+    # Combinar los bits
+    ieee_bits = (sign << 31) | (exponent << 23) | (mantissa & 0x7FFFFF)
+    return ieee_bits.to_bytes(4, byteorder='big', signed=False)
 
 def encode_int(i: int) -> bytes:
     """Codifica un int de 4 bytes"""
-    return struct.pack('>I', i)
+    return i.to_bytes(4, byteorder='big', signed=False)
 
 def encode_datetime(dt: datetime) -> bytes:
     """Codifica datetime como timestamp (8 bytes)"""
     timestamp = int(dt.timestamp())
-    return struct.pack('>Q', timestamp)
+    return timestamp.to_bytes(8, byteorder='big', signed=False)
 
 def encode_date(d: date) -> bytes:
     """Codifica date como timestamp (8 bytes)"""
@@ -38,7 +80,7 @@ def encode_date(d: date) -> bytes:
 
 def encode_bool(b: bool) -> bytes:
     """Codifica bool como 1 byte"""
-    return struct.pack('B', 1 if b else 0)
+    return (1 if b else 0).to_bytes(1, byteorder='big', signed=False)
 
 def encode_transaction(trans: Transactions) -> bytes:
     """Codifica una transacción"""
@@ -147,7 +189,7 @@ def encode_batch(entities: List[Union[Transactions, TransactionItems, Users, Sto
     Formato: [4 bytes: cantidad][1 byte: tipo][datos de entidades...]
     """
     if not entities:
-        return struct.pack('>I', 0) + struct.pack('B', 0)  # Batch vacío
+        return (0).to_bytes(4, byteorder='big', signed=False) + (0).to_bytes(1, byteorder='big', signed=False)  # Batch vacío
     
     # Verificar que todas las entidades sean del mismo tipo
     entity_type = get_entity_type(entities[0])
@@ -156,8 +198,8 @@ def encode_batch(entities: List[Union[Transactions, TransactionItems, Users, Sto
             raise ValueError("Todas las entidades en un batch deben ser del mismo tipo")
     
     # Codificar header
-    data = struct.pack('>I', len(entities))  # 4 bytes: cantidad
-    data += struct.pack('B', entity_type)    # 1 byte: tipo
+    data = len(entities).to_bytes(4, byteorder='big', signed=False)  # 4 bytes: cantidad
+    data += entity_type.to_bytes(1, byteorder='big', signed=False)    # 1 byte: tipo
     
     # Codificar entidades
     for entity in entities:
