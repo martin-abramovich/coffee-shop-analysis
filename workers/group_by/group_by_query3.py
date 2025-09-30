@@ -1,0 +1,144 @@
+from collections import defaultdict
+from datetime import datetime
+from middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
+from workers.utils import deserialize_message, serialize_message
+
+# --- Configuración ---
+RABBIT_HOST = "localhost"
+INPUT_EXCHANGE = "transactions_hour"     # exchange del filtro por hora
+INPUT_ROUTING_KEY = "hour"               # routing key del filtro por hora
+OUTPUT_EXCHANGE = "transactions_query3"  # exchange de salida para query 3
+ROUTING_KEY = "query3"                   # routing para topic
+
+def parse_semester(created_at: str) -> str:
+    """Extrae el año-semestre de created_at. Retorna formato 'YYYY-S1' o 'YYYY-S2'."""
+    if not created_at:
+        raise ValueError("created_at vacío")
+    
+    try:
+        # Intentar extraer directamente el mes de los primeros caracteres (YYYY-MM)
+        month_str = created_at[5:7]  # Extraer MM de YYYY-MM-DD
+        month = int(month_str)
+        year_str = created_at[:4]    # Extraer YYYY
+        
+        # Determinar semestre basado en el mes
+        semester = "S1" if month <= 6 else "S2"
+        return f"{year_str}-{semester}"
+        
+    except Exception:
+        # Fallback: parsing completo
+        try:
+            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            semester = "S1" if dt.month <= 6 else "S2"
+            return f"{dt.year}-{semester}"
+        except Exception:
+            dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+            semester = "S1" if dt.month <= 6 else "S2"
+            return f"{dt.year}-{semester}"
+
+def group_by_semester_and_store(rows):
+    """Agrupa por (semestre, store_id) y calcula TPV para Query 3."""
+    metrics = defaultdict(lambda: {
+        'total_payment_value': 0.0
+    })
+    
+    for r in rows:
+        # Validar datos requeridos
+        created_at = r.get("created_at")
+        store_id = r.get("store_id")
+        
+        if not created_at or not store_id or not store_id.strip():
+            continue
+        
+        try:
+            semester = parse_semester(created_at)
+            normalized_store_id = store_id.strip()
+            
+            # Extraer final_amount de la fila
+            final_amount = r.get("final_amount", 0.0)
+            
+            # Convertir a tipo numérico si viene como string
+            if isinstance(final_amount, str):
+                final_amount = float(final_amount) if final_amount else 0.0
+            
+            # Clave compuesta: (semestre, store_id)
+            key = (semester, normalized_store_id)
+            
+            # Acumular TPV (Total Payment Value)
+            metrics[key]['total_payment_value'] += final_amount
+            
+        except Exception:
+            # Ignorar filas con datos inválidos
+            continue
+    
+    return metrics
+
+def on_message(body):
+    header, rows = deserialize_message(body)
+    
+    # Verificar si es mensaje de End of Stream
+    if header.get("is_eos") == "true":
+        print("[GroupByQuery3] End of Stream recibido. Reenviando...")
+        # Reenviar EOS a workers downstream
+        eos_msg = serialize_message([], header)
+        mq_out.send(eos_msg)
+        print("[GroupByQuery3] EOS reenviado a workers downstream")
+        return
+    
+    # Procesamiento normal
+    total_in = len(rows)
+    
+    # Agrupar por (semestre, store_id) y calcular TPV
+    semester_store_metrics = group_by_semester_and_store(rows)
+    
+    # Enviar cada combinación (semestre, store) por separado
+    groups_sent = 0
+    total_tpv = 0.0
+    
+    for (semester, store_id), metrics in semester_store_metrics.items():
+        if metrics['total_payment_value'] > 0:
+            # Crear un registro único con las métricas de (semestre, store)
+            query3_record = {
+                'semester': semester,
+                'store_id': store_id,
+                'total_payment_value': metrics['total_payment_value']
+            }
+            
+            # Agregar información del grupo al header
+            group_header = header.copy() if header else {}
+            group_header["group_by"] = "semester_store"
+            group_header["group_key"] = f"{semester}|{store_id}"
+            group_header["semester"] = semester
+            group_header["store_id"] = store_id
+            group_header["group_size"] = 1
+            group_header["metrics_type"] = "query3_aggregated"
+            
+            # Enviar como lista con un solo elemento
+            out_msg = serialize_message([query3_record], group_header)
+            mq_out.send(out_msg)
+            groups_sent += 1
+            
+            # Acumular total para logging
+            total_tpv += metrics['total_payment_value']
+    
+    unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
+    unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
+    
+    print(f"[GroupByQuery3] in={total_in} combinations_created={len(semester_store_metrics)} groups_sent={groups_sent}")
+    print(f"[GroupByQuery3] unique_semesters={unique_semesters} unique_stores={unique_stores} total_tpv={total_tpv:.2f}")
+
+if __name__ == "__main__":
+    # Entrada: suscripción al exchange del filtro por hora
+    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
+    
+    # Salida: exchange para datos agregados de query 3
+    mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+    
+    print("[*] GroupByQuery3 worker esperando mensajes...")
+    try:
+        mq_in.start_consuming(on_message)
+    except KeyboardInterrupt:
+        mq_in.stop_consuming()
+        mq_in.close()
+        mq_out.close()
+        print("[x] GroupByQuery3 worker detenido")
