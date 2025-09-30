@@ -1,0 +1,108 @@
+"""
+Results Handler - Maneja la recepción de resultados finales
+Este módulo se ejecuta en el gateway para recibir resultados de los aggregators
+"""
+
+import sys
+import os
+import threading
+from collections import defaultdict
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from middleware.middleware import MessageMiddlewareExchange
+from workers.utils import deserialize_message
+
+RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
+OUTPUT_DIR = './results'
+
+# Exchanges de resultados
+RESULT_EXCHANGES = {
+    'query1': ('results_query1', 'query1_results'),
+    'query2': ('results_query2', 'query2_results'),
+    'query3': ('results_query3', 'query3_results'),
+    'query4': ('results_query4', 'query4_results')
+}
+
+class ResultsHandler:
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        self.results = defaultdict(list)
+        os.makedirs(self.output_dir, exist_ok=True)
+        print(f"[ResultsHandler] Directorio: {self.output_dir}")
+    
+    def collect_result(self, query_name, rows, header):
+        if header.get('is_final_result') == 'true':
+            self.results[query_name].extend(rows)
+            
+            batch_num = header.get('batch_number', '?')
+            total_batches = header.get('total_batches', '?')
+            print(f"[ResultsHandler] {query_name}: Batch {batch_num}/{total_batches}")
+            
+            if batch_num == total_batches:
+                self.save_results(query_name, header)
+    
+    def save_results(self, query_name, header):
+        results_list = self.results[query_name]
+        if not results_list:
+            return
+        
+        output_file = os.path.join(self.output_dir, f"{query_name}.csv")
+        columns = list(results_list[0].keys())
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(','.join(columns) + '\n')
+            for row in results_list:
+                values = [str(row.get(col, '')) for col in columns]
+                f.write(','.join(values) + '\n')
+        
+        print(f"\n{'='*60}")
+        print(f"[ResultsHandler] ✅ {query_name} COMPLETADO")
+        print(f"[ResultsHandler] Resultados: {len(results_list)}")
+        print(f"[ResultsHandler] Archivo: {output_file}")
+        print(f"{'='*60}\n")
+
+def start_results_handler():
+    """Inicia el handler de resultados en threads separados"""
+    handler = ResultsHandler(OUTPUT_DIR)
+    mq_connections = {}
+    
+    try:
+        for query_name, (exchange, routing_key) in RESULT_EXCHANGES.items():
+            mq = MessageMiddlewareExchange(RABBITMQ_HOST, exchange, [routing_key])
+            mq_connections[query_name] = mq
+        
+        print("[ResultsHandler] Esperando resultados...")
+        
+        def create_consumer(query_name, mq):
+            def on_message(body):
+                try:
+                    header, rows = deserialize_message(body)
+                    handler.collect_result(query_name, rows, header)
+                except Exception as e:
+                    print(f"[ResultsHandler] Error en {query_name}: {e}")
+            
+            def consume():
+                try:
+                    mq.start_consuming(on_message)
+                except Exception as e:
+                    print(f"[ResultsHandler] Error consumiendo {query_name}: {e}")
+            
+            return consume
+        
+        threads = []
+        for query_name, mq in mq_connections.items():
+            consumer = create_consumer(query_name, mq)
+            thread = threading.Thread(target=consumer, name=f"Results-{query_name}", daemon=True)
+            thread.start()
+            threads.append(thread)
+        
+        # Los threads corren como daemon, no bloqueamos aquí
+        print("[ResultsHandler] Threads de resultados iniciados")
+        
+    except Exception as e:
+        print(f"[ResultsHandler] Error: {e}")
+        for mq in mq_connections.values():
+            try:
+                mq.close()
+            except:
+                pass

@@ -1,9 +1,16 @@
+import sys
+import os
+import signal
 from collections import defaultdict
-from middleware import MessageMiddlewareExchange
+
+# Añadir paths al PYTHONPATH
+sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+from middleware.middleware import MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
-RABBIT_HOST = "localhost"
+RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 INPUT_EXCHANGE = "transactions_query3"    # exchange del group_by_query3
 INPUT_ROUTING_KEY = "query3"              # routing key del group_by_query3
 STORES_EXCHANGE = "stores_raw"            # exchange de stores para JOIN
@@ -231,9 +238,25 @@ if __name__ == "__main__":
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery3] Interrupción recibida, cerrando...")
-        mq_tpv.stop_consuming()
-        mq_stores.stop_consuming()
-        mq_tpv.close()
-        mq_stores.close()
-        mq_out.close()
+        try:
+            mq_tpv.stop_consuming()
+        except:
+            pass
+        try:
+            mq_stores.stop_consuming()
+        except:
+            pass
+    finally:
+        try:
+            mq_tpv.close()
+        except:
+            pass
+        try:
+            mq_stores.close()
+        except:
+            pass
+        try:
+            mq_out.close()
+        except:
+            pass
         print("[x] AggregatorQuery3 detenido")

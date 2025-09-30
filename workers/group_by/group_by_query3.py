@@ -1,10 +1,17 @@
+import sys
+import os
+import signal
 from collections import defaultdict
 from datetime import datetime
-from middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
+
+# Añadir paths al PYTHONPATH
+sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
-RABBIT_HOST = "localhost"
+RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 INPUT_EXCHANGE = "transactions_hour"     # exchange del filtro por hora
 INPUT_ROUTING_KEY = "hour"               # routing key del filtro por hora
 OUTPUT_EXCHANGE = "transactions_query3"  # exchange de salida para query 3
@@ -128,6 +135,17 @@ def on_message(body):
     print(f"[GroupByQuery3] unique_semesters={unique_semesters} unique_stores={unique_stores} total_tpv={total_tpv:.2f}")
 
 if __name__ == "__main__":
+    shutdown_requested = False
+    
+    def signal_handler(signum, frame):
+        global shutdown_requested
+        print(f"[GroupByQuery3] Señal {signum} recibida, cerrando...")
+        shutdown_requested = True
+        mq_in.stop_consuming()
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     # Entrada: suscripción al exchange del filtro por hora
     mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
     
@@ -138,7 +156,14 @@ if __name__ == "__main__":
     try:
         mq_in.start_consuming(on_message)
     except KeyboardInterrupt:
-        mq_in.stop_consuming()
-        mq_in.close()
-        mq_out.close()
+        print("\n[GroupByQuery3] Interrupción recibida")
+    finally:
+        try:
+            mq_in.close()
+        except:
+            pass
+        try:
+            mq_out.close()
+        except:
+            pass
         print("[x] GroupByQuery3 worker detenido")

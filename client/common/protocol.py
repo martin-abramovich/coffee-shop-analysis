@@ -65,18 +65,33 @@ def encode_float(f: float) -> bytes:
     return ieee_bits.to_bytes(4, byteorder='big', signed=False)
 
 def encode_int(i: int) -> bytes:
-    """Codifica un int de 4 bytes"""
+    """Codifica un int de 4 bytes (signed para manejar negativos)"""
+    # Asegurar que sea unsigned positivo, si es negativo usar 0
+    if i < 0:
+        i = 0
     return i.to_bytes(4, byteorder='big', signed=False)
 
 def encode_datetime(dt: datetime) -> bytes:
     """Codifica datetime como timestamp (8 bytes)"""
-    timestamp = int(dt.timestamp())
-    return timestamp.to_bytes(8, byteorder='big', signed=False)
+    try:
+        timestamp = int(dt.timestamp())
+        # Manejar timestamps negativos (fechas antes de 1970)
+        if timestamp < 0:
+            # Para fechas muy antiguas, usar una fecha mínima válida
+            timestamp = 0
+        return timestamp.to_bytes(8, byteorder='big', signed=False)
+    except (ValueError, OSError, OverflowError):
+        # Si hay error, usar timestamp 0
+        return (0).to_bytes(8, byteorder='big', signed=False)
 
 def encode_date(d: date) -> bytes:
     """Codifica date como timestamp (8 bytes)"""
-    dt = datetime.combine(d, datetime.min.time())
-    return encode_datetime(dt)
+    try:
+        dt = datetime.combine(d, datetime.min.time())
+        return encode_datetime(dt)
+    except (ValueError, OSError, OverflowError):
+        # Si hay error, usar timestamp 0
+        return (0).to_bytes(8, byteorder='big', signed=False)
 
 def encode_bool(b: bool) -> bytes:
     """Codifica bool como 1 byte"""

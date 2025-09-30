@@ -1,8 +1,15 @@
-from middleware import MessageMiddlewareExchange
+import sys
+import os
+import signal
+
+# Añadir paths al PYTHONPATH
+sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+from middleware.middleware import MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
-RABBIT_HOST = "localhost"
+RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 INPUT_EXCHANGE = "transactions_amount"    # exchange del filtro por amount
 INPUT_ROUTING_KEY = "amount"              # routing key del filtro por amount
 OUTPUT_EXCHANGE = "results_query1"        # exchange de salida para resultados finales
@@ -10,71 +17,70 @@ ROUTING_KEY = "query1_results"            # routing para resultados
 
 class AggregatorQuery1:
     def __init__(self):
-        # Acumulador de transaction_items válidos
-        self.accumulated_items = []
+        # Acumulador de transacciones válidas
+        self.accumulated_transactions = []
         self.total_received = 0
         
-    def accumulate_transaction_items(self, rows):
-        """Acumula transaction_items que pasaron todos los filtros."""
+    def accumulate_transactions(self, rows):
+        """Acumula transacciones que pasaron todos los filtros."""
         for row in rows:
-            # Extraer los campos requeridos para Query 1: transaction_items completos
-            item_record = {
+            # Extraer los campos requeridos para Query 1: transaction_id y final_amount
+            transaction_record = {
                 'transaction_id': row.get('transaction_id'),
-                'item_id': row.get('item_id'),
-                'quantity': row.get('quantity'),
-                'unit_price': row.get('unit_price'),
-                'subtotal': row.get('subtotal'),
-                'created_at': row.get('created_at')
+                'final_amount': row.get('final_amount')
             }
             
             # Validar que tengamos los campos necesarios
-            required_fields = ['transaction_id', 'item_id', 'quantity', 'subtotal', 'created_at']
-            if all(item_record.get(field) is not None for field in required_fields):
-                self.accumulated_items.append(item_record)
+            if transaction_record.get('transaction_id') and transaction_record.get('final_amount') is not None:
+                self.accumulated_transactions.append(transaction_record)
             else:
-                missing_fields = [field for field in required_fields if item_record.get(field) is None]
-                print(f"[AggregatorQuery1] Item descartado por campos faltantes: {missing_fields}")
+                missing = []
+                if not transaction_record.get('transaction_id'):
+                    missing.append('transaction_id')
+                if transaction_record.get('final_amount') is None:
+                    missing.append('final_amount')
+                print(f"[AggregatorQuery1] Transacción descartada por campos faltantes: {missing}")
         
         self.total_received += len(rows)
-        print(f"[AggregatorQuery1] Acumulados {len(rows)} items. Total acumulado: {len(self.accumulated_items)}")
+        print(f"[AggregatorQuery1] Acumuladas {len(rows)} transacciones. Total acumulado: {len(self.accumulated_transactions)}")
     
     def generate_final_results(self):
         """Genera los resultados finales para Query 1."""
         print(f"[AggregatorQuery1] Generando resultados finales...")
-        print(f"[AggregatorQuery1] Total transaction_items válidos: {len(self.accumulated_items)}")
+        print(f"[AggregatorQuery1] Total transacciones válidas: {len(self.accumulated_transactions)}")
         
-        if not self.accumulated_items:
-            print(f"[AggregatorQuery1] No hay transaction_items válidos para reportar")
+        if not self.accumulated_transactions:
+            print(f"[AggregatorQuery1] No hay transacciones válidas para reportar")
             return []
         
-        # Para Query 1, retornamos todos los transaction_items con las columnas requeridas
+        # Para Query 1, retornamos todas las transacciones con transaction_id y final_amount
         results = []
-        for item in self.accumulated_items:
+        for txn in self.accumulated_transactions:
             # Asegurar tipos de datos correctos
             try:
                 result = {
-                    'transaction_id': str(item['transaction_id']),
-                    'item_id': str(item['item_id']),
-                    'quantity': int(item['quantity']) if item['quantity'] is not None else 0,
-                    'unit_price': float(item['unit_price']) if item.get('unit_price') is not None else 0.0,
-                    'subtotal': float(item['subtotal']) if item['subtotal'] is not None else 0.0,
-                    'created_at': str(item['created_at'])
+                    'transaction_id': str(txn['transaction_id']),
+                    'final_amount': float(txn['final_amount']) if isinstance(txn['final_amount'], str) else txn['final_amount']
                 }
                 results.append(result)
             except (ValueError, TypeError) as e:
-                print(f"[AggregatorQuery1] Error procesando item {item}: {e}")
+                print(f"[AggregatorQuery1] Error procesando transacción {txn}: {e}")
                 continue
         
-        # Ordenar por transaction_id y luego por item_id para consistencia
-        results.sort(key=lambda x: (x['transaction_id'], x['item_id']))
+        # Ordenar por transaction_id para consistencia
+        results.sort(key=lambda x: x['transaction_id'])
         
-        print(f"[AggregatorQuery1] Resultados generados: {len(results)} transaction_items")
+        print(f"[AggregatorQuery1] Resultados generados: {len(results)} transacciones")
         print(f"[AggregatorQuery1] Ejemplo de resultados:")
-        for i, result in enumerate(results[:3]):  # Mostrar solo los primeros 3
-            print(f"  {i+1}. TXN: {result['transaction_id']}, Item: {result['item_id']}, "
-                  f"Qty: {result['quantity']}, Subtotal: ${result['subtotal']:.2f}")
-        if len(results) > 3:
-            print(f"  ... y {len(results) - 3} más")
+        for i, result in enumerate(results[:5]):  # Mostrar solo los primeros 5
+            print(f"  {i+1}. TXN: {result['transaction_id']}, Monto: ${result['final_amount']:.2f}")
+        if len(results) > 5:
+            print(f"  ... y {len(results) - 5} más")
+        
+        # Estadísticas
+        total_amount = sum(r['final_amount'] for r in results)
+        avg_amount = total_amount / len(results) if results else 0
+        print(f"[AggregatorQuery1] Monto total: ${total_amount:,.2f}, Promedio: ${avg_amount:.2f}")
             
         return results
 
@@ -95,32 +101,43 @@ def on_message(body):
             # Enviar resultados finales
             results_header = {
                 "query": "query1",
-                "total_results": len(final_results),
-                "description": "Transaction_items de transacciones 2024-2025, 06:00-23:00, monto >= 75",
-                "columns": "transaction_id,item_id,quantity,unit_price,subtotal,created_at",
+                "total_results": str(len(final_results)),
+                "description": "Transacciones 2024-2025, 06:00-23:00, monto >= 75",
+                "columns": "transaction_id,final_amount",
                 "is_final_result": "true"
             }
             
             # Enviar en batches si hay muchos resultados
-            batch_size = 50  # Menos items por batch debido a más datos por registro
+            batch_size = 100
             for i in range(0, len(final_results), batch_size):
                 batch = final_results[i:i + batch_size]
                 batch_header = results_header.copy()
-                batch_header["batch_number"] = (i // batch_size) + 1
-                batch_header["total_batches"] = (len(final_results) + batch_size - 1) // batch_size
+                batch_header["batch_number"] = str((i // batch_size) + 1)
+                batch_header["total_batches"] = str((len(final_results) + batch_size - 1) // batch_size)
                 
                 result_msg = serialize_message(batch, batch_header)
                 mq_out.send(result_msg)
-                print(f"[AggregatorQuery1] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} items")
+                print(f"[AggregatorQuery1] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} transacciones")
         
         print("[AggregatorQuery1] Resultados finales enviados. Agregador terminado.")
         return
     
     # Procesamiento normal: acumular datos
     if rows:
-        aggregator.accumulate_transaction_items(rows)
+        aggregator.accumulate_transactions(rows)
 
 if __name__ == "__main__":
+    shutdown_requested = False
+    
+    def signal_handler(signum, frame):
+        global shutdown_requested
+        print(f"[AggregatorQuery1] Señal {signum} recibida, cerrando...")
+        shutdown_requested = True
+        mq_in.stop_consuming()
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     # Entrada: suscripción al exchange del filtro por amount
     mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
     
@@ -128,13 +145,20 @@ if __name__ == "__main__":
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
     
     print("[*] AggregatorQuery1 esperando mensajes...")
-    print("[*] Query 1: Transaction_items de transacciones 2024-2025, 06:00-23:00, monto >= 75")
-    print("[*] Columnas output: transaction_id, item_id, quantity, unit_price, subtotal, created_at")
+    print("[*] Query 1: Transacciones 2024-2025, 06:00-23:00, monto >= 75")
+    print("[*] Columnas output: transaction_id, final_amount")
     
     try:
         mq_in.start_consuming(on_message)
     except KeyboardInterrupt:
-        mq_in.stop_consuming()
-        mq_in.close()
-        mq_out.close()
+        print("\n[AggregatorQuery1] Interrupción recibida")
+    finally:
+        try:
+            mq_in.close()
+        except:
+            pass
+        try:
+            mq_out.close()
+        except:
+            pass
         print("[x] AggregatorQuery1 detenido")

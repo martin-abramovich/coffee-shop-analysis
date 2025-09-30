@@ -1,8 +1,14 @@
 import socket
 import struct
+import sys
+import os
 from datetime import datetime, timezone
-from processor import process_batch_by_type
-from serializer import serialize_message
+
+# Añadir paths al PYTHONPATH
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from gateway.processor import process_batch_by_type
+from gateway.serializer import serialize_message
 
 HOST = "0.0.0.0"
 PORT = 9000
@@ -222,8 +228,10 @@ def handle_client(conn, addr, mq_map):
                     
                     if processed_items:
                         total_processed += len(processed_items)
-                        print(f"[GATEWAY] Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
-                        print(f"[GATEWAY] Total procesado hasta ahora: {total_processed} registros")
+                        # Solo imprimir cada 1000 batches para reducir logs
+                        if batch_id % 1000 == 0:
+                            print(f"[GATEWAY] Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
+                            print(f"[GATEWAY] Total procesado hasta ahora: {total_processed} registros")
 
                         # Serializar y enviar al middleware
                         msg = serialize_message(
@@ -242,6 +250,30 @@ def handle_client(conn, addr, mq_map):
                                 target_mq.send(msg)
                             except Exception as e:
                                 print(f"[GATEWAY] Error enviando al middleware ({entity_type}): {e}")
+                                # Si es error de conexión, intentar reconectar
+                                if "conexión" in str(e).lower() or "connection" in str(e).lower():
+                                    print(f"[GATEWAY] Intentando reconectar {entity_type}...")
+                                    try:
+                                        # Recrear la conexión
+                                        from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
+                                        if entity_type == "stores":
+                                            mq_map[entity_type] = MessageMiddlewareExchange(
+                                                host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                                                exchange_name="stores_raw",
+                                                route_keys=["q3", "q4"]
+                                            )
+                                        else:
+                                            mq_map[entity_type] = MessageMiddlewareQueue(
+                                                host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                                                queue_name=f"{entity_type}_raw"
+                                            )
+                                        print(f"[GATEWAY] Reconectado {entity_type}, reintentando envío...")
+                                        target_mq = mq_map[entity_type]
+                                        target_mq.send(msg)
+                                        print(f"[GATEWAY] Reenvío exitoso para {entity_type}")
+                                    except Exception as retry_e:
+                                        print(f"[GATEWAY] Error en reconexión de {entity_type}: {retry_e}")
+                                        # Continuar sin este mensaje
 
                 except ValueError as e:
                     # Si faltan datos del batch, esperar más datos sin limpiar el buffer

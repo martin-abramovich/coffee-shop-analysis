@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copiar requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar código
+COPY middleware/ ./middleware/
+COPY gateway/ ./gateway/
+COPY workers/ ./workers/
+
+# Crear directorio para resultados
+RUN mkdir -p /app/results
+
+# Mantener WORKDIR en /app para que los imports funcionen
+WORKDIR /app
+
+# Exponer puerto del gateway
+EXPOSE 9000
+
+CMD ["python", "-m", "gateway.main"]

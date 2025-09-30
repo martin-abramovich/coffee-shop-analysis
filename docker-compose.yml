@@ -1,0 +1,208 @@
+version: '3.8'
+
+services:
+  # ==================== MIDDLEWARE ====================
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: coffee-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - coffee-network
+
+  # ==================== GATEWAY ====================
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    container_name: coffee-gateway
+    ports:
+      - "9000:9000"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+    volumes:
+      - ./results:/app/results
+
+  # ==================== FILTERS ====================
+  filter_year:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.filter.filter_year"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  filter_hour:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.filter.filter_hour"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  filter_amount:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.filter.filter_amount"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  # ==================== GROUP BY ====================
+  group_by_query2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.group_by.group_by_query2"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  group_by_query3:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.group_by.group_by_query3"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  group_by_query4:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.group_by.group_by_query4"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  # ==================== AGGREGATORS ====================
+  aggregator_query1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.aggregator.aggregator_query1"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  aggregator_query2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.aggregator.aggregator_query2"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  aggregator_query3:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.aggregator.aggregator_query3"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  aggregator_query4:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.aggregator.aggregator_query4"]
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  # ==================== CLIENT ====================
+  # El cliente se ejecuta manualmente cuando sea necesario
+  # docker-compose run --rm client
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: coffee-client
+    environment:
+      GATEWAY_HOST: gateway
+    depends_on:
+      - gateway
+    networks:
+      - coffee-network
+    volumes:
+      - ./.data:/app/.data:ro  # Montar datos como solo lectura
+    profiles:
+      - manual  # No se inicia automáticamente
+
+networks:
+  coffee-network:
+    driver: bridge
+
+volumes:
+  results:

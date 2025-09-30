@@ -1,5 +1,11 @@
-from entities_clean import MenuItemShort, StoreShort, UserShort, Transactions, TransactionItems
+import sys
+import os
 import logging
+
+# Añadir paths al PYTHONPATH
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from gateway.entities_clean import MenuItemShort, StoreShort, UserShort, Transactions, TransactionItems
 from datetime import datetime
 
 # Configurar logging
@@ -201,12 +207,13 @@ def process_batch_by_type(items: list, data_type: str) -> list:
             logger.error(f"Error procesando item {i} de tipo {data_type}: {e}")
             continue
     
-    # Log de estadísticas del batch
+    # Log de estadísticas del batch (solo si hay errores significativos)
     total_items = len(items)
     successful = len(processed)
-    logger.info(f"Batch procesado - Tipo: {data_type}, Total: {total_items}, "
-                f"Exitosos: {successful}, Errores validación: {validation_errors}, "
-                f"Errores procesamiento: {processing_errors}")
+    if validation_errors > 0 or processing_errors > 0:
+        logger.warning(f"Batch procesado - Tipo: {data_type}, Total: {total_items}, "
+                      f"Exitosos: {successful}, Errores validación: {validation_errors}, "
+                      f"Errores procesamiento: {processing_errors}")
     
     return processed
 
