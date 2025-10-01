@@ -12,10 +12,10 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGE = "transactions_year"     # exchange del filtro por año
-INPUT_ROUTING_KEY = "year"               # routing key del filtro por año
-OUTPUT_EXCHANGE = "transactions_query2"  # exchange de salida para query 2
-ROUTING_KEY = "query2"                   # routing para topic
+INPUT_EXCHANGE = "transaction_items_year"     # exchange del filtro por año (CORREGIDO: transaction_items)
+INPUT_ROUTING_KEY = "year"                    # routing key del filtro por año
+OUTPUT_EXCHANGE = "transactions_query2"       # exchange de salida para query 2
+ROUTING_KEY = "query2"                        # routing para topic
 
 def parse_month(created_at: str) -> str:
     """Extrae el año-mes de created_at. Retorna formato 'YYYY-MM'."""
@@ -145,13 +145,14 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: suscripción al exchange del filtro por año
+    # Entrada: suscripción al exchange del filtro por año (transaction_items)
     mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
     
     # Salida: exchange para datos agregados de query 2
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
     
     print("[*] GroupByQuery2 worker esperando mensajes...")
+    print(f"[*] Consumiendo de: {INPUT_EXCHANGE} (transaction_items filtrados por año)")
     try:
         mq_in.start_consuming(on_message)
     except KeyboardInterrupt:

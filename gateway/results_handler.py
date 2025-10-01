@@ -31,17 +31,25 @@ class ResultsHandler:
         print(f"[ResultsHandler] Directorio: {self.output_dir}")
     
     def collect_result(self, query_name, rows, header):
+        # Reducir verbosidad: mostrar solo conteo y batch
+        print(f"[ResultsHandler] {query_name}: filas={len(rows)} batch={header.get('batch_number', '?')}/{header.get('total_batches', '?')}")
+        
         if header.get('is_final_result') == 'true':
+            # Sin variantes: una sola colección por query
             self.results[query_name].extend(rows)
             
             batch_num = header.get('batch_number', '?')
             total_batches = header.get('total_batches', '?')
-            print(f"[ResultsHandler] {query_name}: Batch {batch_num}/{total_batches}")
+            print(f"[ResultsHandler] {query_name}: Batch {batch_num}/{total_batches} acumulado={len(self.results[query_name])}")
             
             if batch_num == total_batches:
+                print(f"[ResultsHandler] Último batch recibido para {query_name}, guardando resultados...")
                 self.save_results(query_name, header)
+        else:
+            print(f"[ResultsHandler] Mensaje ignorado - is_final_result={header.get('is_final_result')}")
     
     def save_results(self, query_name, header):
+        # Sin variantes: usar results[query_name]
         results_list = self.results[query_name]
         if not results_list:
             return
@@ -68,10 +76,11 @@ def start_results_handler():
     
     try:
         for query_name, (exchange, routing_key) in RESULT_EXCHANGES.items():
+            print(f"[ResultsHandler] Conectando a exchange: {exchange} con routing_key: {routing_key} para {query_name}")
             mq = MessageMiddlewareExchange(RABBITMQ_HOST, exchange, [routing_key])
             mq_connections[query_name] = mq
         
-        print("[ResultsHandler] Esperando resultados...")
+        print("[ResultsHandler] Esperando resultados de:", list(RESULT_EXCHANGES.keys()))
         
         def create_consumer(query_name, mq):
             def on_message(body):

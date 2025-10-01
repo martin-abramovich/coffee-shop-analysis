@@ -16,6 +16,21 @@ class ValidationError(Exception):
     """Excepción para errores de validación de datos"""
     pass
 
+def canonicalize_id(value: str) -> str:
+    """Normaliza IDs que puedan venir como números con parte decimal nula.
+    Ej: "901388.0" -> "901388". No altera IDs alfanuméricos.
+    """
+    if not isinstance(value, str):
+        value = str(value)
+    s = value.strip()
+    if '.' in s:
+        parts = s.split('.', 1)
+        integer_part = parts[0]
+        decimal_part = parts[1]
+        if decimal_part.strip('0') == '':
+            return integer_part
+    return s
+
 def validate_transaction(item: dict) -> None:
     """Valida que una transacción tenga todos los campos requeridos y válidos"""
     required_fields = ['transaction_id', 'store_id', 'user_id', 'final_amount', 'created_at']
@@ -32,8 +47,16 @@ def validate_transaction(item: dict) -> None:
     except (ValueError, TypeError):
         raise ValidationError(f"final_amount debe ser un número válido, recibido: {item['final_amount']}")
     
-    # Validar formato de transaction_id (no vacío, sin espacios)
-    if not item['transaction_id'].strip():
+    # Normalizar y validar IDs y claves
+    if isinstance(item['transaction_id'], str):
+        item['transaction_id'] = item['transaction_id'].strip()
+    if isinstance(item['store_id'], str):
+        item['store_id'] = item['store_id'].strip()
+    if isinstance(item['user_id'], str):
+        item['user_id'] = canonicalize_id(item['user_id'])
+
+    # Validar formato de transaction_id (no vacío)
+    if not item['transaction_id']:
         raise ValidationError("transaction_id no puede estar vacío")
     
     # Validar formato de created_at (ISO string)
@@ -50,8 +73,10 @@ def validate_user(item: dict) -> None:
         if field not in item or item[field] is None or item[field] == '':
             raise ValidationError(f"Campo requerido '{field}' faltante o vacío")
     
-    # Validar formato de user_id (no vacío)
-    if not item['user_id'].strip():
+    # Normalizar y validar user_id
+    if isinstance(item['user_id'], str):
+        item['user_id'] = canonicalize_id(item['user_id'])
+    if not item['user_id']:
         raise ValidationError("user_id no puede estar vacío")
     
     # Validar formato de birthdate (ISO date)
@@ -68,8 +93,12 @@ def validate_store(item: dict) -> None:
         if field not in item or item[field] is None or item[field] == '':
             raise ValidationError(f"Campo requerido '{field}' faltante o vacío")
     
-    # Validar que store_name no esté vacío
-    if not item['store_name'].strip():
+    # Normalizar y validar store_id y store_name
+    if isinstance(item['store_id'], str):
+        item['store_id'] = item['store_id'].strip()
+    if isinstance(item['store_name'], str):
+        item['store_name'] = item['store_name'].strip()
+    if not item['store_name']:
         raise ValidationError("store_name no puede estar vacío")
 
 def validate_menu_item(item: dict) -> None:
@@ -85,8 +114,8 @@ def validate_menu_item(item: dict) -> None:
         price = float(item['price'])
         if price < 0:
             raise ValidationError(f"price debe ser positivo, recibido: {price}")
-    except (ValueError, TypeError):
-        raise ValidationError(f"price debe ser un número válido, recibido: {item['price']}")
+    except (ValueError, TypeError, KeyError):
+        raise ValidationError(f"price debe ser un número válido, recibido: {item.get('price')}")
     
     # Validar que item_name no esté vacío
     if not item['item_name'].strip():

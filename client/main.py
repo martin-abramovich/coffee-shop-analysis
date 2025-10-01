@@ -12,13 +12,15 @@ from typing import List, Tuple
 
 # Variable global para el cliente (necesario para signal handler)
 global_client = None
+VERBOSE = os.environ.get('CLIENT_VERBOSE', '0') == '1'
 
 def signal_handler(signum, frame):
     """
     Maneja las señales SIGTERM e SIGINT para graceful shutdown
     """
     signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
-    print(f"\n⚠️  Señal {signal_name} recibida. Iniciando cierre ordenado...")
+    if VERBOSE:
+        print(f"\n⚠️  Señal {signal_name} recibida. Iniciando cierre ordenado...")
     
     if global_client:
         global_client.request_shutdown()
@@ -27,14 +29,16 @@ def signal_handler(signum, frame):
     import time
     time.sleep(1)
     
-    print("👋 Cliente terminado por señal del sistema.")
+    if VERBOSE:
+        print("👋 Cliente terminado por señal del sistema.")
     sys.exit(0)
 
 def setup_signal_handlers():
     """Configura los manejadores de señales"""
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    print("🛡️  Manejadores de señales configurados (SIGTERM, SIGINT)")
+    if VERBOSE:
+        print("🛡️  Manejadores de señales configurados (SIGTERM, SIGINT)")
 
 def load_config(config_path="config.ini"):
     """
@@ -117,23 +121,28 @@ def csv_reader_thread(csv_files: List[str], batch_size: int, data_queue: queue.Q
     """
     Thread que lee archivos CSV y coloca los batches en la cola.
     """
-    print("🔍 Hilo lector iniciado")
+    if VERBOSE:
+        print("🔍 Hilo lector iniciado")
     
     try:
         for i, csv_file_path in enumerate(csv_files, 1):
             if stop_event.is_set():
-                print(f"  ⚠️  Hilo lector detenido. Archivos procesados: {i-1}/{len(csv_files)}")
+                if VERBOSE:
+                    print(f"  ⚠️  Hilo lector detenido. Archivos procesados: {i-1}/{len(csv_files)}")
                 break
                 
-            print(f"  [{i}/{len(csv_files)}] Leyendo: {os.path.basename(csv_file_path)}")
+            if VERBOSE:
+                print(f"  [{i}/{len(csv_files)}] Leyendo: {os.path.basename(csv_file_path)}")
             
             # Detectar tipo de entidad desde el nombre del archivo
             try:
                 entity_type = detect_entity_type_from_filename(os.path.basename(csv_file_path))
-                print(f"    Tipo detectado: {entity_type}")
+                if VERBOSE:
+                    print(f"    Tipo detectado: {entity_type}")
             except ValueError as e:
-                print(f"    Error detectando tipo: {e}")
-                print(f"    Intentando detectar desde cabeceras...")
+                if VERBOSE:
+                    print(f"    Error detectando tipo: {e}")
+                    print(f"    Intentando detectar desde cabeceras...")
                 entity_type = None  # Se detectará automáticamente
             
             batch_count = 0
@@ -147,9 +156,10 @@ def csv_reader_thread(csv_files: List[str], batch_size: int, data_queue: queue.Q
                     # Enviar batch a la cola
                     data_queue.put(('batch', batch, csv_file_path))
                     batch_count += 1
-                    print(f"    Batch {batch_count} leído, entidades: {len(batch)}")
+                    if VERBOSE:
+                        print(f"    Batch {batch_count} leído, entidades: {len(batch)}")
                 
-                if not stop_event.is_set():
+                if not stop_event.is_set() and VERBOSE:
                     print(f"    ✓ Completada lectura: {batch_count} batches")
                 
             except Exception as e:
@@ -159,7 +169,8 @@ def csv_reader_thread(csv_files: List[str], batch_size: int, data_queue: queue.Q
         
         # Señal de fin de datos
         data_queue.put(('end', None, None))
-        print("🔍 Hilo lector terminado")
+        if VERBOSE:
+            print("🔍 Hilo lector terminado")
         
     except Exception as e:
         print(f"✗ Error crítico en hilo lector: {e}")
@@ -169,7 +180,8 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
     """
     Thread que envía los batches al servidor.
     """
-    print("📤 Hilo enviador iniciado")
+    if VERBOSE:
+        print("📤 Hilo enviador iniciado")
     
     total_batches_sent = 0
     total_entities_sent = 0
@@ -181,7 +193,8 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                 item = data_queue.get(timeout=1.0)
                 
                 if item[0] == 'end':
-                    print("📤 Fin de datos recibido")
+                    if VERBOSE:
+                        print("📤 Fin de datos recibido")
                     break
                 elif item[0] == 'error':
                     print(f"📤 Error recibido del lector: {item[1]}")
@@ -190,13 +203,15 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                     _, batch, source_file = item
                     
                     if client.is_shutdown_requested():
-                        print("📤 Cierre solicitado durante envío")
+                        if VERBOSE:
+                            print("📤 Cierre solicitado durante envío")
                         break
                     
                     client.send_batch(batch)
                     total_batches_sent += 1
                     total_entities_sent += len(batch)
-                    print(f"📤 Enviado batch {total_batches_sent}, entidades: {len(batch)} (de {os.path.basename(source_file)})")
+                    if VERBOSE:
+                        print(f"📤 Enviado batch {total_batches_sent}, entidades: {len(batch)} (de {os.path.basename(source_file)})")
                     
                     data_queue.task_done()
                 
@@ -212,7 +227,8 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                     # En caso de error de envío, seguir intentando con los siguientes
                     continue
         
-        print(f"📤 Hilo enviador terminado. Total enviado: {total_batches_sent} batches, {total_entities_sent} entidades")
+        if VERBOSE:
+            print(f"📤 Hilo enviador terminado. Total enviado: {total_batches_sent} batches, {total_entities_sent} entidades")
         
     except Exception as e:
         print(f"✗ Error crítico en hilo enviador: {e}")
@@ -221,7 +237,8 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
     """
     Coordina la lectura y envío usando dos threads separados.
     """
-    print(f"\n🚀 Iniciando procesamiento con threading para {len(csv_files)} archivos")
+    if VERBOSE:
+        print(f"\n🚀 Iniciando procesamiento con threading para {len(csv_files)} archivos")
     
     # Cola para comunicar entre threads
     data_queue = queue.Queue(maxsize=50)  # Limitar tamaño para evitar usar mucha memoria
@@ -249,10 +266,12 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
         reader_thread.join()
         sender_thread_obj.join()
         
-        print("🎉 Procesamiento threaded completado")
+        if VERBOSE:
+            print("🎉 Procesamiento threaded completado")
         
     except KeyboardInterrupt:
-        print("\n⚠️  Interrupción detectada, cerrando threads...")
+        if VERBOSE:
+            print("\n⚠️  Interrupción detectada, cerrando threads...")
         stop_event.set()
         client.request_shutdown()
         
@@ -260,7 +279,8 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
         reader_thread.join(timeout=5)
         sender_thread_obj.join(timeout=5)
         
-        print("🛑 Threads cerrados por interrupción")
+        if VERBOSE:
+            print("🛑 Threads cerrados por interrupción")
         raise
     
     except Exception as e:
@@ -284,21 +304,24 @@ def main():
         port = config['port']
         batch_size = config['batch_size']
         
-        print(f"Configuración cargada:")
-        print(f"  Dataset: {dataset_path}")
-        print(f"  Servidor: {host}:{port}")
-        print(f"  Tamaño de batch: {batch_size}")
+        if VERBOSE:
+            print(f"Configuración cargada:")
+            print(f"  Dataset: {dataset_path}")
+            print(f"  Servidor: {host}:{port}")
+            print(f"  Tamaño de batch: {batch_size}")
         
         # Encontrar todos los archivos CSV
         csv_files = find_csv_files(dataset_path)
-        print(f"\nEncontrados {len(csv_files)} archivo(s) CSV para procesar:")
-        for csv_file in csv_files:
-            print(f"  - {os.path.basename(csv_file)}")
+        if VERBOSE:
+            print(f"\nEncontrados {len(csv_files)} archivo(s) CSV para procesar:")
+            for csv_file in csv_files:
+                print(f"  - {os.path.basename(csv_file)}")
         
         # Usar la clase Client con context manager
         with Client(host, port) as client:
             global_client = client  # Asignar para signal handler
-            print(f"\n✓ Conectado al servidor en {host}:{port}")
+            if VERBOSE:
+                print(f"\n✓ Conectado al servidor en {host}:{port}")
             
             # Procesar archivos CSV usando threading
             read_and_send_threaded(csv_files, batch_size, client)
@@ -306,16 +329,20 @@ def main():
             # Opcional: recibir respuesta final del servidor (solo si no hay cierre pendiente)
             if not client.is_shutdown_requested():
                 try:
-                    print("\nEsperando respuesta del servidor...")
+                    if VERBOSE:
+                        print("\nEsperando respuesta del servidor...")
                     response = client.receive_response()
-                    print(f"Respuesta del servidor: {response}")
+                    if VERBOSE:
+                        print(f"Respuesta del servidor: {response}")
                 except Exception as e:
                     print(f"No se pudo recibir respuesta del servidor: {e}")
             else:
-                print("\n⚠️  Omitiendo recepción de respuesta debido a cierre solicitado")
+                if VERBOSE:
+                    print("\n⚠️  Omitiendo recepción de respuesta debido a cierre solicitado")
         
         global_client = None  # Limpiar referencia
-        print("\n✓ Cliente terminó el procesamiento.")
+        if VERBOSE:
+            print("\n✓ Cliente terminó el procesamiento.")
         
     except KeyboardInterrupt:
         print(f"\n⚠️  Interrupción por teclado (Ctrl+C)")

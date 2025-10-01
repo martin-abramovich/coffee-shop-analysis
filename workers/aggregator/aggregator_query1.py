@@ -100,10 +100,15 @@ def on_message(body):
         if final_results:
             # Enviar resultados finales
             results_header = {
+                "type": "result",
+                "stream_id": "query1_results",
+                "batch_id": "final",
+                "is_batch_end": "true",
+                "is_eos": "false",
                 "query": "query1",
                 "total_results": str(len(final_results)),
-                "description": "Transacciones 2024-2025, 06:00-23:00, monto >= 75",
-                "columns": "transaction_id,final_amount",
+                "description": "Transacciones_2024-2025_06:00-23:00_monto>=75",
+                "columns": "transaction_id:final_amount",
                 "is_final_result": "true"
             }
             
@@ -146,10 +151,15 @@ if __name__ == "__main__":
             if final_results:
                 # Enviar resultados finales
                 results_header = {
+                    "type": "result",
+                    "stream_id": "query1_results",
+                    "batch_id": "final",
+                    "is_batch_end": "true",
+                    "is_eos": "false",
                     "query": "query1",
                     "total_results": str(len(final_results)),
-                    "description": "Transacciones 2024-2025, 06:00-23:00, monto >= 75",
-                    "columns": "transaction_id,final_amount",
+                    "description": "Transacciones_2024-2025_06:00-23:00_monto>=75",
+                    "columns": "transaction_id:final_amount",
                     "is_final_result": "true"
                 }
                 
@@ -162,6 +172,10 @@ if __name__ == "__main__":
                     batch_header = results_header.copy()
                     batch_header["batch_number"] = str((i // batch_size) + 1)
                     batch_header["total_batches"] = str(total_batches)
+                    
+                    # Debug: ver qué hay en el header antes de serializar
+                    if i == 0:
+                        print(f"[AggregatorQuery1] DEBUG - Header completo a enviar: {batch_header}")
                     
                     result_msg = serialize_message(batch, batch_header)
                     mq_out.send(result_msg)

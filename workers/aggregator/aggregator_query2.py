@@ -33,6 +33,10 @@ class AggregatorQuery2:
         self.batches_received = 0
         self.menu_items_loaded = False
         self.eos_received = False
+        self.results_sent = False
+        # Flags para deduplicar EOS
+        self.eos_metrics_done = False
+        self.eos_menu_done = False
         
     def load_menu_items(self, rows):
         """Carga menu_items para construir el diccionario item_id -> item_name."""
@@ -67,7 +71,7 @@ class AggregatorQuery2:
                 continue
             
             # Clave compuesta: (mes, item_id)
-            key = (month, item_id)
+            key = (month, item_id if not isinstance(item_id, str) else item_id.strip())
             
             # Acumular métricas
             self.month_item_metrics[key]['total_quantity'] += total_quantity
@@ -87,21 +91,17 @@ class AggregatorQuery2:
             print(f"[AggregatorQuery2] No hay datos para procesar")
             return []
         
+        # Si no hay menu_items, haremos un fallback usando item_id como nombre
         if not self.item_id_to_name:
-            print(f"[AggregatorQuery2] WARNING: No hay menu_items cargados. No se puede hacer JOIN.")
-            return []
+            print(f"[AggregatorQuery2] WARNING: No hay menu_items cargados. Se usará item_id como item_name (fallback)")
         
         # Preparar resultados por mes con JOIN
         results_by_month = defaultdict(list)
         
         # Agrupar por mes y hacer JOIN con menu_items
         for (month, item_id), metrics in self.month_item_metrics.items():
-            # JOIN: buscar item_name para el item_id
-            item_name = self.item_id_to_name.get(item_id)
-            
-            if not item_name:
-                print(f"[AggregatorQuery2] WARNING: item_id {item_id} no encontrado en menu_items")
-                continue
+            # JOIN: buscar item_name para el item_id (o fallback al propio id)
+            item_name = self.item_id_to_name.get(item_id) or str(item_id)
             
             results_by_month[month].append({
                 'item_id': item_id,
@@ -120,26 +120,22 @@ class AggregatorQuery2:
             # Producto con mayor ganancia (mayor subtotal)
             most_profitable = max(products, key=lambda x: x['total_subtotal'])
             
-            # Agregar resultado de producto más vendido
             final_results.append({
                 'year_month_created_at': month,
                 'item_name': most_sold['item_name'],
+                'item_id': most_sold['item_id'],
                 'sellings_qty': most_sold['total_quantity'],
+                'profit_sum': '',
                 'metric_type': 'most_sold'
             })
-            
-            # Agregar resultado de producto con mayor ganancia (si es diferente)
-            if most_profitable['item_name'] != most_sold['item_name']:
-                final_results.append({
-                    'year_month_created_at': month,
-                    'item_name': most_profitable['item_name'],
-                    'profit_sum': most_profitable['total_subtotal'],
-                    'metric_type': 'most_profitable'
-                })
-            else:
-                # Si es el mismo producto, agregar ambas métricas
-                final_results[-1]['profit_sum'] = most_profitable['total_subtotal']
-                final_results[-1]['metric_type'] = 'both'
+            final_results.append({
+                'year_month_created_at': month,
+                'item_name': most_profitable['item_name'],
+                'item_id': most_profitable['item_id'],
+                'sellings_qty': '',
+                'profit_sum': most_profitable['total_subtotal'],
+                'metric_type': 'most_profitable'
+            })
         
         # Ordenar por mes para consistencia
         final_results.sort(key=lambda x: x['year_month_created_at'])
@@ -151,9 +147,12 @@ class AggregatorQuery2:
         print(f"[AggregatorQuery2] Ejemplos de resultados:")
         for i, result in enumerate(final_results[:5]):
             if 'sellings_qty' in result:
-                print(f"  {i+1}. {result['year_month_created_at']} - {result['item_name']}: {result['sellings_qty']} unidades vendidas")
+                print(f"  {i+1}. {result['year_month_created_at']} - {result['item_name']} (id={result.get('item_id','?')}): {result['sellings_qty']} unidades vendidas")
             if 'profit_sum' in result:
-                print(f"      Ganancia: ${result['profit_sum']:.2f}")
+                try:
+                    print(f"      Ganancia: ${float(result['profit_sum']):.2f}")
+                except Exception:
+                    print(f"      Ganancia: {result['profit_sum']}")
         
         if len(final_results) > 5:
             print(f"  ... y {len(final_results) - 5} más")
@@ -164,10 +163,12 @@ class AggregatorQuery2:
         """Genera resultados detallados con TODOS los productos por mes (opcional)."""
         detailed_results = []
         
-        for (month, item_name), metrics in self.month_item_metrics.items():
+        for (month, item_id), metrics in self.month_item_metrics.items():
+            item_name = self.item_id_to_name.get(item_id) or str(item_id)
             # Registro para cantidad vendida
             detailed_results.append({
                 'year_month_created_at': month,
+                'item_id': item_id,
                 'item_name': item_name,
                 'sellings_qty': metrics['total_quantity']
             })
@@ -175,6 +176,7 @@ class AggregatorQuery2:
             # Registro para ganancia
             detailed_results.append({
                 'year_month_created_at': month,
+                'item_id': item_id,
                 'item_name': item_name,
                 'profit_sum': metrics['total_subtotal']
             })
@@ -187,23 +189,36 @@ class AggregatorQuery2:
 # Instancia global del agregador
 aggregator = AggregatorQuery2()
 
+# Variable global para control de shutdown
+shutdown_event = None
+
 def on_metrics_message(body):
     """Maneja mensajes de métricas de group_by_query2."""
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[AggregatorQuery2] EOS recibido en métricas. Marcando como listo para generar resultados...")
-        aggregator.eos_received = True
-        
-        # Si ya tenemos menu_items cargados, generar resultados
-        if aggregator.menu_items_loaded:
-            generate_and_send_results()
+        if not aggregator.eos_metrics_done:
+            print("[AggregatorQuery2] EOS recibido en métricas. Marcando como listo para generar resultados...")
+            aggregator.eos_received = True
+            aggregator.eos_metrics_done = True
+            
+            # Si ya tenemos menu_items cargados y aún no enviamos, generar resultados una sola vez
+            if aggregator.menu_items_loaded and not aggregator.results_sent:
+                generate_and_send_results()
         return
     
     # Procesamiento normal: acumular métricas parciales
     if rows:
+        try:
+            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+            print(f"[AggregatorQuery2] DEBUG metrics batch size={len(rows)} keys={sample_keys}")
+            if rows and isinstance(rows[0], dict):
+                print(f"[AggregatorQuery2] DEBUG metrics sample={rows[0]}")
+        except Exception as _:
+            pass
         aggregator.accumulate_metrics(rows)
+        # Si ya tenemos menu items cargados y aún no enviamos, y el lote actual vacía el buffer (batch pequeño), podemos emitir al recibir EOS
 
 def on_menu_items_message(body):
     """Maneja mensajes de menu_items para el JOIN."""
@@ -211,50 +226,79 @@ def on_menu_items_message(body):
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[AggregatorQuery2] EOS recibido en menu_items. Marcando como listo...")
-        aggregator.menu_items_loaded = True
-        
-        # Si ya recibimos EOS de métricas, generar resultados
-        if aggregator.eos_received:
-            generate_and_send_results()
+        if not aggregator.eos_menu_done:
+            print("[AggregatorQuery2] EOS recibido en menu_items. Marcando como listo...")
+            aggregator.menu_items_loaded = True
+            aggregator.eos_menu_done = True
+            
+            # Si ya recibimos EOS de métricas y aún no enviamos, generar resultados
+            if aggregator.eos_received and not aggregator.results_sent:
+                generate_and_send_results()
         return
     
     # Cargar menu_items para JOIN
     if rows:
+        try:
+            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+            print(f"[AggregatorQuery2] DEBUG menu_items batch size={len(rows)} keys={sample_keys}")
+            if rows and isinstance(rows[0], dict):
+                print(f"[AggregatorQuery2] DEBUG menu_items sample={rows[0]}")
+        except Exception as _:
+            pass
         aggregator.load_menu_items(rows)
+        # Marcar como cargado si recibimos datos, aunque aún no llegue EOS
+        aggregator.menu_items_loaded = True
 
 def generate_and_send_results():
     """Genera y envía los resultados finales cuando ambos flujos terminaron."""
-    print("[AggregatorQuery2] Ambos flujos completados. Generando resultados finales...")
+    global shutdown_event
+    print("[AggregatorQuery2] 🔚 Ambos flujos completados. Generando resultados finales...")
     
     # Generar resultados finales (TOP productos por mes)
     final_results = aggregator.generate_final_results()
     
     if final_results:
-        # Enviar resultados finales
+        # Enviar resultados finales con headers completos
         results_header = {
+            "type": "result",
+            "stream_id": "query2_results",
+            "batch_id": "final",
+            "is_batch_end": "true",
+            "is_eos": "false",
             "query": "query2",
-            "total_results": len(final_results),
-            "description": "Productos más vendidos y mayor ganancia por mes 2024-2025",
+            "total_results": str(len(final_results)),
+            "description": "Productos_mas_vendidos_y_mayor_ganancia_por_mes_2024-2025",
             "is_final_result": "true"
         }
         
-        # Enviar en batches si hay muchos resultados
+        # Enviar en batches el conjunto combinado (dos filas por mes)
         batch_size = 50
+        total_batches = (len(final_results) + batch_size - 1) // batch_size
         for i in range(0, len(final_results), batch_size):
             batch = final_results[i:i + batch_size]
             batch_header = results_header.copy()
-            batch_header["batch_number"] = (i // batch_size) + 1
-            batch_header["total_batches"] = (len(final_results) + batch_size - 1) // batch_size
-            
+            batch_header["batch_number"] = str((i // batch_size) + 1)
+            batch_header["total_batches"] = str(total_batches)
             result_msg = serialize_message(batch, batch_header)
             mq_out.send(result_msg)
-            print(f"[AggregatorQuery2] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+            print(f"[AggregatorQuery2] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
     
-    print("[AggregatorQuery2] Resultados finales enviados. Agregador terminado.")
+    aggregator.results_sent = True
+    print("[AggregatorQuery2] 🎉 Resultados finales enviados. Agregador terminado.")
+    shutdown_event.set()  # Señalar que terminamos
 
 if __name__ == "__main__":
     import threading
+    
+    # Control de EOS - esperamos EOS de ambas fuentes
+    shutdown_event = threading.Event()
+    
+    def signal_handler(signum, frame):
+        print(f"[AggregatorQuery2] Señal {signum} recibida, cerrando...")
+        shutdown_event.set()
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada 1: métricas del group_by_query2
     mq_metrics = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
@@ -268,33 +312,41 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery2 esperando mensajes...")
     print("[*] Query 2: Productos más vendidos y mayor ganancia por mes 2024-2025")
     print("[*] Consumiendo de 2 fuentes: métricas + menu_items para JOIN")
+    print("[*] 🎯 Esperará hasta recibir EOS de ambas fuentes para generar reporte")
     
     def consume_metrics():
         try:
             mq_metrics.start_consuming(on_metrics_message)
         except Exception as e:
-            print(f"[AggregatorQuery2] Error en consumo de métricas: {e}")
+            if not shutdown_event.is_set():
+                print(f"[AggregatorQuery2] ❌ Error en consumo de métricas: {e}")
     
     def consume_menu_items():
         try:
             mq_menu_items.start_consuming(on_menu_items_message)
         except Exception as e:
-            print(f"[AggregatorQuery2] Error en consumo de menu_items: {e}")
+            if not shutdown_event.is_set():
+                print(f"[AggregatorQuery2] ❌ Error en consumo de menu_items: {e}")
     
     try:
-        # Ejecutar ambos consumidores en paralelo
-        metrics_thread = threading.Thread(target=consume_metrics)
-        menu_items_thread = threading.Thread(target=consume_menu_items)
+        # Ejecutar ambos consumidores en paralelo como daemon threads
+        metrics_thread = threading.Thread(target=consume_metrics, daemon=True)
+        menu_items_thread = threading.Thread(target=consume_menu_items, daemon=True)
         
         metrics_thread.start()
         menu_items_thread.start()
         
-        # Esperar a que terminen ambos threads
-        metrics_thread.join()
-        menu_items_thread.join()
+        # Esperar hasta recibir EOS o timeout
+        timeout = 300  # 5 minutos timeout
+        if shutdown_event.wait(timeout):
+            print("[AggregatorQuery2] ✅ Terminando por EOS completo o señal")
+        else:
+            print(f"[AggregatorQuery2] ⏰ Timeout después de {timeout}s, terminando...")
         
     except KeyboardInterrupt:
-        print("\n[AggregatorQuery2] Interrupción recibida, cerrando...")
+        print("\n[AggregatorQuery2] Interrupción recibida")
+    finally:
+        # Detener consumo
         try:
             mq_metrics.stop_consuming()
         except:
@@ -303,7 +355,8 @@ if __name__ == "__main__":
             mq_menu_items.stop_consuming()
         except:
             pass
-    finally:
+        
+        # Cerrar conexiones
         try:
             mq_metrics.close()
         except:

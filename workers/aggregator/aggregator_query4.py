@@ -19,6 +19,19 @@ USERS_QUEUE = "users_raw"                 # cola de users para JOIN
 OUTPUT_EXCHANGE = "results_query4"        # exchange de salida para resultados finales
 ROUTING_KEY = "query4_results"            # routing para resultados
 
+def canonicalize_id(value):
+    """Normaliza IDs: si vienen como "123.0" convertir a "123"; sino, devolver strip()."""
+    if value is None:
+        return ''
+    if not isinstance(value, str):
+        value = str(value)
+    s = value.strip()
+    if '.' in s:
+        left, right = s.split('.', 1)
+        if right.strip('0') == '':
+            return left
+    return s
+
 class AggregatorQuery4:
     def __init__(self):
         # Acumulador de transaction_count por (store_id, user_id)
@@ -42,9 +55,12 @@ class AggregatorQuery4:
             store_name = row.get('store_name')
             
             if store_id and store_name:
-                self.store_id_to_name[store_id] = store_name.strip()
+                normalized_store_id = canonicalize_id(store_id)
+                normalized_store_name = store_name.strip()
+                if normalized_store_id:
+                    self.store_id_to_name[normalized_store_id] = normalized_store_name
         
-        print(f"[AggregatorQuery4] Cargadas {len(self.store_id_to_name)} stores para JOIN")
+        print(f"[AggregatorQuery4] Stores cargadas para JOIN: {len(self.store_id_to_name)}")
     
     def load_users(self, rows):
         """Carga users para construir el diccionario user_id -> birthdate."""
@@ -53,9 +69,12 @@ class AggregatorQuery4:
             birthdate = row.get('birthdate')
             
             if user_id and birthdate:
-                self.user_id_to_birthdate[user_id] = birthdate.strip()
+                normalized_user_id = canonicalize_id(user_id)
+                normalized_birthdate = birthdate.strip()
+                if normalized_user_id:
+                    self.user_id_to_birthdate[normalized_user_id] = normalized_birthdate
         
-        print(f"[AggregatorQuery4] Cargados {len(self.user_id_to_birthdate)} users para JOIN")
+        print(f"[AggregatorQuery4] Users cargados para JOIN: {len(self.user_id_to_birthdate)}")
     
     def accumulate_transactions(self, rows):
         """Acumula conteos de transacciones de group_by_query4."""
@@ -76,21 +95,22 @@ class AggregatorQuery4:
                 continue
             
             # Clave compuesta: (store_id, user_id)
-            key = (store_id, user_id)
+            normalized_store_id = canonicalize_id(store_id)
+            normalized_user_id = canonicalize_id(user_id)
+            if not normalized_store_id or not normalized_user_id:
+                continue
+            key = (normalized_store_id, normalized_user_id)
             
             # Acumular conteo de transacciones
             self.store_user_transactions[key] += transaction_count
         
         self.batches_received += 1
-        print(f"[AggregatorQuery4] Procesado batch {self.batches_received} con {len(rows)} registros")
-        print(f"[AggregatorQuery4] Total combinaciones (store_id, user_id): {len(self.store_user_transactions)}")
+        # Logs compactos
+        print(f"[AggregatorQuery4] Batch {self.batches_received}: {len(rows)} registros; total combinaciones={len(self.store_user_transactions)}")
     
     def generate_final_results(self):
         """Genera los resultados finales para Query 4 con doble JOIN y TOP 3."""
-        print(f"[AggregatorQuery4] Generando resultados finales...")
-        print(f"[AggregatorQuery4] Total combinaciones procesadas: {len(self.store_user_transactions)}")
-        print(f"[AggregatorQuery4] Stores disponibles para JOIN: {len(self.store_id_to_name)}")
-        print(f"[AggregatorQuery4] Users disponibles para JOIN: {len(self.user_id_to_birthdate)}")
+        print(f"[AggregatorQuery4] Generando resultados... combinaciones={len(self.store_user_transactions)}, stores={len(self.store_id_to_name)}, users={len(self.user_id_to_birthdate)}")
         
         if not self.store_user_transactions:
             print(f"[AggregatorQuery4] No hay datos para procesar")
@@ -111,6 +131,7 @@ class AggregatorQuery4:
             # JOIN con stores: obtener store_name
             store_name = self.store_id_to_name.get(store_id)
             if not store_name:
+                # Mantener advertencia importante
                 print(f"[AggregatorQuery4] WARNING: store_id {store_id} no encontrado en stores")
                 continue
             
@@ -139,6 +160,7 @@ class AggregatorQuery4:
             
             store_name = top3_customers[0]['store_name'] if top3_customers else "Unknown"
             
+            # Reducir detalle por sucursal para no saturar
             print(f"[AggregatorQuery4] {store_name}: TOP 3 de {len(customers)} clientes")
             
             # Agregar resultados del TOP 3
@@ -148,6 +170,7 @@ class AggregatorQuery4:
                     'birthdate': customer['birthdate']
                 })
                 
+                # Detalle por usuario opcionalmente podría quitarse si aún hay ruido
                 print(f"  {i+1}. User {customer['user_id']}: {customer['transaction_count']} transacciones, nacido {customer['birthdate']}")
         
         # Ordenar resultados por store_name y luego por transaction_count (implícito en el orden)
@@ -163,6 +186,9 @@ class AggregatorQuery4:
 
 # Instancia global del agregador
 aggregator = AggregatorQuery4()
+
+# Variable global para control de shutdown
+shutdown_event = None
 
 def on_transactions_message(body):
     """Maneja mensajes de conteos de transacciones de group_by_query4."""
@@ -180,6 +206,13 @@ def on_transactions_message(body):
     
     # Procesamiento normal: acumular conteos de transacciones
     if rows:
+        try:
+            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+            print(f"[AggregatorQuery4] DEBUG tx batch size={len(rows)} keys={sample_keys}")
+            if rows and isinstance(rows[0], dict):
+                print(f"[AggregatorQuery4] DEBUG tx sample={rows[0]}")
+        except Exception as _:
+            pass
         aggregator.accumulate_transactions(rows)
 
 def on_stores_message(body):
@@ -198,6 +231,13 @@ def on_stores_message(body):
     
     # Cargar stores para JOIN
     if rows:
+        try:
+            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+            print(f"[AggregatorQuery4] DEBUG stores batch size={len(rows)} keys={sample_keys}")
+            if rows and isinstance(rows[0], dict):
+                print(f"[AggregatorQuery4] DEBUG stores sample={rows[0]}")
+        except Exception as _:
+            pass
         aggregator.load_stores(rows)
 
 def on_users_message(body):
@@ -216,40 +256,67 @@ def on_users_message(body):
     
     # Cargar users para JOIN
     if rows:
+        try:
+            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+            print(f"[AggregatorQuery4] DEBUG users batch size={len(rows)} keys={sample_keys}")
+            if rows and isinstance(rows[0], dict):
+                print(f"[AggregatorQuery4] DEBUG users sample={rows[0]}")
+        except Exception as _:
+            pass
         aggregator.load_users(rows)
 
 def generate_and_send_results():
     """Genera y envía los resultados finales cuando todos los flujos terminaron."""
-    print("[AggregatorQuery4] Todos los flujos completados. Generando resultados finales...")
+    global shutdown_event
+    print("[AggregatorQuery4] 🔚 Todos los flujos completados. Generando resultados finales...")
     
     # Generar resultados finales
     final_results = aggregator.generate_final_results()
     
     if final_results:
-        # Enviar resultados finales
+        # Enviar resultados finales con headers completos
         results_header = {
+            "type": "result",
+            "stream_id": "query4_results",
+            "batch_id": "final",
+            "is_batch_end": "true",
+            "is_eos": "false",
             "query": "query4",
-            "total_results": len(final_results),
-            "description": "TOP 3 clientes por sucursal (más compras 2024-2025)",
+            "total_results": str(len(final_results)),
+            "description": "TOP_3_clientes_por_sucursal_mas_compras_2024-2025",
             "is_final_result": "true"
         }
         
         # Enviar en batches si hay muchos resultados
         batch_size = 30  # Batches más pequeños para TOP 3
+        total_batches = (len(final_results) + batch_size - 1) // batch_size
+        
         for i in range(0, len(final_results), batch_size):
             batch = final_results[i:i + batch_size]
             batch_header = results_header.copy()
-            batch_header["batch_number"] = (i // batch_size) + 1
-            batch_header["total_batches"] = (len(final_results) + batch_size - 1) // batch_size
+            batch_header["batch_number"] = str((i // batch_size) + 1)
+            batch_header["total_batches"] = str(total_batches)
             
             result_msg = serialize_message(batch, batch_header)
             mq_out.send(result_msg)
-            print(f"[AggregatorQuery4] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+            print(f"[AggregatorQuery4] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
     
-    print("[AggregatorQuery4] Resultados finales enviados. Agregador terminado.")
+    print("[AggregatorQuery4] 🎉 Resultados finales enviados. Agregador terminado.")
+    if shutdown_event:
+        shutdown_event.set()
 
 if __name__ == "__main__":
     import threading
+    
+    # Control de EOS - esperamos EOS de las 3 fuentes
+    shutdown_event = threading.Event()
+    
+    def signal_handler(signum, frame):
+        print(f"[AggregatorQuery4] Señal {signum} recibida, cerrando...")
+        shutdown_event.set()
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada 1: conteos de transacciones del group_by_query4
     mq_transactions = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
@@ -266,42 +333,50 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery4 esperando mensajes...")
     print("[*] Query 4: TOP 3 clientes por sucursal (más compras 2024-2025)")
     print("[*] Consumiendo de 3 fuentes: transacciones + stores + users para doble JOIN")
+    print("[*] 🎯 Esperará hasta recibir EOS de las 3 fuentes para generar reporte")
     
     def consume_transactions():
         try:
             mq_transactions.start_consuming(on_transactions_message)
         except Exception as e:
-            print(f"[AggregatorQuery4] Error en consumo de transacciones: {e}")
+            if not shutdown_event.is_set():
+                print(f"[AggregatorQuery4] ❌ Error en consumo de transacciones: {e}")
     
     def consume_stores():
         try:
             mq_stores.start_consuming(on_stores_message)
         except Exception as e:
-            print(f"[AggregatorQuery4] Error en consumo de stores: {e}")
+            if not shutdown_event.is_set():
+                print(f"[AggregatorQuery4] ❌ Error en consumo de stores: {e}")
             
     def consume_users():
         try:
             mq_users.start_consuming(on_users_message)
         except Exception as e:
-            print(f"[AggregatorQuery4] Error en consumo de users: {e}")
+            if not shutdown_event.is_set():
+                print(f"[AggregatorQuery4] ❌ Error en consumo de users: {e}")
     
     try:
-        # Ejecutar los 3 consumidores en paralelo
-        transactions_thread = threading.Thread(target=consume_transactions)
-        stores_thread = threading.Thread(target=consume_stores)
-        users_thread = threading.Thread(target=consume_users)
+        # Ejecutar los 3 consumidores en paralelo como daemon threads
+        transactions_thread = threading.Thread(target=consume_transactions, daemon=True)
+        stores_thread = threading.Thread(target=consume_stores, daemon=True)
+        users_thread = threading.Thread(target=consume_users, daemon=True)
         
         transactions_thread.start()
         stores_thread.start()
         users_thread.start()
         
-        # Esperar a que terminen los 3 threads
-        transactions_thread.join()
-        stores_thread.join()
-        users_thread.join()
+        # Esperar hasta recibir EOS o timeout
+        timeout = 300  # 5 minutos timeout
+        if shutdown_event.wait(timeout):
+            print("[AggregatorQuery4] ✅ Terminando por EOS completo o señal")
+        else:
+            print(f"[AggregatorQuery4] ⏰ Timeout después de {timeout}s, terminando...")
         
     except KeyboardInterrupt:
-        print("\n[AggregatorQuery4] Interrupción recibida, cerrando...")
+        print("\n[AggregatorQuery4] Interrupción recibida")
+    finally:
+        # Detener consumo
         try:
             mq_transactions.stop_consuming()
         except:
@@ -314,7 +389,8 @@ if __name__ == "__main__":
             mq_users.stop_consuming()
         except:
             pass
-    finally:
+        
+        # Cerrar conexiones
         try:
             mq_transactions.close()
         except:

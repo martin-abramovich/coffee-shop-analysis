@@ -51,7 +51,8 @@ def on_message(body):
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[GroupByQuery4] End of Stream recibido. Reenviando...")
+        # Log compacto al recibir EOS
+        print("[GroupByQuery4] EOS recibido, reenviando aguas abajo")
         # Reenviar EOS a workers downstream
         eos_msg = serialize_message([], header)
         mq_out.send(eos_msg)
@@ -97,8 +98,7 @@ def on_message(body):
     unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
     unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
     
-    print(f"[GroupByQuery4] in={total_in} combinations_created={len(store_user_metrics)} groups_sent={groups_sent}")
-    print(f"[GroupByQuery4] unique_stores={unique_stores} unique_users={unique_users} total_transactions={total_transactions}")
+    print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent={groups_sent} stores={unique_stores} users={unique_users} tx_total={total_transactions}")
 
 if __name__ == "__main__":
     shutdown_requested = False

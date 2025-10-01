@@ -184,7 +184,7 @@ def parse_item(data, offset, entity_type):
         item_id, offset = read_string(data, offset)
         item_name, offset = read_string(data, offset)
         _category, offset = read_string(data, offset)
-        _price, offset = read_float(data, offset)
+        price, offset = read_float(data, offset)
         _is_seasonal, offset = read_bool(data, offset)
         has_from, offset = read_bool(data, offset)
         if has_from:
@@ -194,6 +194,8 @@ def parse_item(data, offset, entity_type):
             _available_to, offset = read_date_as_iso(data, offset)
         item['item_id'] = item_id
         item['item_name'] = item_name
+        # Incluir price para pasar validación en gateway.processor.validate_menu_item
+        item['price'] = price
     
     return item, offset
 

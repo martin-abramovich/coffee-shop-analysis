@@ -5,6 +5,7 @@ from dataclasses import dataclass
 class MenuItemShort:
     item_id: str
     item_name: str
+    price: float
 
 @dataclass
 class StoreShort:

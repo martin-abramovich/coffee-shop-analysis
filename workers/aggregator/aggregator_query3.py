@@ -130,6 +130,9 @@ class AggregatorQuery3:
 # Instancia global del agregador
 aggregator = AggregatorQuery3()
 
+# Variable global para control de shutdown
+shutdown_event = None
+
 def on_tpv_message(body):
     """Maneja mensajes de TPV de group_by_query3."""
     header, rows = deserialize_message(body)
@@ -146,6 +149,13 @@ def on_tpv_message(body):
     
     # Procesamiento normal: acumular TPV parciales
     if rows:
+        try:
+            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+            print(f"[AggregatorQuery3] DEBUG tpv batch size={len(rows)} keys={sample_keys}")
+            if rows and isinstance(rows[0], dict):
+                print(f"[AggregatorQuery3] DEBUG tpv sample={rows[0]}")
+        except Exception as _:
+            pass
         aggregator.accumulate_tpv(rows)
 
 def on_stores_message(body):
@@ -164,40 +174,67 @@ def on_stores_message(body):
     
     # Cargar stores para JOIN
     if rows:
+        try:
+            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
+            print(f"[AggregatorQuery3] DEBUG stores batch size={len(rows)} keys={sample_keys}")
+            if rows and isinstance(rows[0], dict):
+                print(f"[AggregatorQuery3] DEBUG stores sample={rows[0]}")
+        except Exception as _:
+            pass
         aggregator.load_stores(rows)
 
 def generate_and_send_results():
     """Genera y envía los resultados finales cuando ambos flujos terminaron."""
-    print("[AggregatorQuery3] Ambos flujos completados. Generando resultados finales...")
+    global shutdown_event
+    print("[AggregatorQuery3] 🔚 Ambos flujos completados. Generando resultados finales...")
     
     # Generar resultados finales
     final_results = aggregator.generate_final_results()
     
     if final_results:
-        # Enviar resultados finales
+        # Enviar resultados finales con headers completos
         results_header = {
+            "type": "result",
+            "stream_id": "query3_results",
+            "batch_id": "final",
+            "is_batch_end": "true",
+            "is_eos": "false",
             "query": "query3",
-            "total_results": len(final_results),
-            "description": "TPV por semestre y sucursal 2024-2025 (06:00-23:00)",
+            "total_results": str(len(final_results)),
+            "description": "TPV_por_semestre_y_sucursal_2024-2025_06:00-23:00",
             "is_final_result": "true"
         }
         
         # Enviar en batches si hay muchos resultados
         batch_size = 50
+        total_batches = (len(final_results) + batch_size - 1) // batch_size
+        
         for i in range(0, len(final_results), batch_size):
             batch = final_results[i:i + batch_size]
             batch_header = results_header.copy()
-            batch_header["batch_number"] = (i // batch_size) + 1
-            batch_header["total_batches"] = (len(final_results) + batch_size - 1) // batch_size
+            batch_header["batch_number"] = str((i // batch_size) + 1)
+            batch_header["total_batches"] = str(total_batches)
             
             result_msg = serialize_message(batch, batch_header)
             mq_out.send(result_msg)
-            print(f"[AggregatorQuery3] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+            print(f"[AggregatorQuery3] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
     
-    print("[AggregatorQuery3] Resultados finales enviados. Agregador terminado.")
+    print("[AggregatorQuery3] 🎉 Resultados finales enviados. Agregador terminado.")
+    if shutdown_event:
+        shutdown_event.set()
 
 if __name__ == "__main__":
     import threading
+    
+    # Control de EOS - esperamos EOS de ambas fuentes
+    shutdown_event = threading.Event()
+    
+    def signal_handler(signum, frame):
+        print(f"[AggregatorQuery3] Señal {signum} recibida, cerrando...")
+        shutdown_event.set()
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada 1: TPV del group_by_query3
     mq_tpv = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
@@ -211,33 +248,41 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery3 esperando mensajes...")
     print("[*] Query 3: TPV por semestre y sucursal 2024-2025 (06:00-23:00)")
     print("[*] Consumiendo de 2 fuentes: TPV + stores para JOIN")
+    print("[*] 🎯 Esperará hasta recibir EOS de ambas fuentes para generar reporte")
     
     def consume_tpv():
         try:
             mq_tpv.start_consuming(on_tpv_message)
         except Exception as e:
-            print(f"[AggregatorQuery3] Error en consumo de TPV: {e}")
+            if not shutdown_event.is_set():
+                print(f"[AggregatorQuery3] ❌ Error en consumo de TPV: {e}")
     
     def consume_stores():
         try:
             mq_stores.start_consuming(on_stores_message)
         except Exception as e:
-            print(f"[AggregatorQuery3] Error en consumo de stores: {e}")
+            if not shutdown_event.is_set():
+                print(f"[AggregatorQuery3] ❌ Error en consumo de stores: {e}")
     
     try:
-        # Ejecutar ambos consumidores en paralelo
-        tpv_thread = threading.Thread(target=consume_tpv)
-        stores_thread = threading.Thread(target=consume_stores)
+        # Ejecutar ambos consumidores en paralelo como daemon threads
+        tpv_thread = threading.Thread(target=consume_tpv, daemon=True)
+        stores_thread = threading.Thread(target=consume_stores, daemon=True)
         
         tpv_thread.start()
         stores_thread.start()
         
-        # Esperar a que terminen ambos threads
-        tpv_thread.join()
-        stores_thread.join()
+        # Esperar hasta recibir EOS o timeout
+        timeout = 300  # 5 minutos timeout
+        if shutdown_event.wait(timeout):
+            print("[AggregatorQuery3] ✅ Terminando por EOS completo o señal")
+        else:
+            print(f"[AggregatorQuery3] ⏰ Timeout después de {timeout}s, terminando...")
         
     except KeyboardInterrupt:
-        print("\n[AggregatorQuery3] Interrupción recibida, cerrando...")
+        print("\n[AggregatorQuery3] Interrupción recibida")
+    finally:
+        # Detener consumo
         try:
             mq_tpv.stop_consuming()
         except:
@@ -246,7 +291,8 @@ if __name__ == "__main__":
             mq_stores.stop_consuming()
         except:
             pass
-    finally:
+        
+        # Cerrar conexiones
         try:
             mq_tpv.close()
         except:
