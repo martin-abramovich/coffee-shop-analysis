@@ -1,6 +1,8 @@
 import sys
 import os
 import signal
+import threading
+import time
 from datetime import datetime
 
 # Añadir paths al PYTHONPATH
@@ -58,18 +60,22 @@ def on_message(body, source_queue):
         print(f"[FilterByYear] Procesadas {len(filtered)} registros de {len(rows)} desde {source_queue} → {output_exchanges}")
 
 if __name__ == "__main__":
-    shutdown_requested = False
-    mq_connections = []
+    # Control de EOS - necesitamos recibir EOS de todas las fuentes
+    eos_received = set()
+    eos_lock = threading.Lock()
+    shutdown_event = threading.Event()
+    
+    def check_all_eos_received():
+        with eos_lock:
+            if len(eos_received) == len(INPUT_QUEUES):
+                print("[FilterYear] ✅ EOS recibido de todas las fuentes. Terminando...")
+                shutdown_event.set()
+                return True
+        return False
     
     def signal_handler(signum, frame):
-        global shutdown_requested
         print(f"[FilterYear] Señal {signum} recibida, cerrando...")
-        shutdown_requested = True
-        for mq in mq_connections:
-            try:
-                mq.stop_consuming()
-            except:
-                pass
+        shutdown_event.set()
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
@@ -86,20 +92,51 @@ if __name__ == "__main__":
         for exchange_name in exchange_names:
             mq_outputs[exchange_name] = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, [ROUTING_KEY])
 
-    print(f"[*] FilterWorkerYear esperando mensajes de {INPUT_QUEUES}...")
-    try:
-        # Procesar cada cola en un hilo separado
-        import threading
+    # Modificar on_message para manejar EOS correctamente
+    def enhanced_on_message(body, source_queue):
+        header, rows = deserialize_message(body)
         
+        # Verificar si es mensaje de End of Stream
+        if header.get("is_eos") == "true":
+            print(f"[FilterYear] 🔚 EOS recibido desde {source_queue}")
+            
+            with eos_lock:
+                eos_received.add(source_queue)
+                print(f"[FilterYear] EOS recibido de: {eos_received} (esperando: {set(INPUT_QUEUES)})")
+            
+            # Reenviar EOS a workers downstream
+            eos_msg = serialize_message([], header)
+            output_exchanges = OUTPUT_EXCHANGES[source_queue]
+            for exchange_name in output_exchanges:
+                mq_outputs[exchange_name].send(eos_msg)
+            print(f"[FilterYear] EOS reenviado a {output_exchanges}")
+            
+            # Verificar si hemos recibido EOS de todas las fuentes
+            check_all_eos_received()
+            return
+        
+        # Procesamiento normal
+        filtered = filter_by_year(rows)
+        if filtered:
+            out_msg = serialize_message(filtered, header)
+            output_exchanges = OUTPUT_EXCHANGES[source_queue]
+            for exchange_name in output_exchanges:
+                mq_outputs[exchange_name].send(out_msg)
+            print(f"[FilterYear] ✅ Procesadas {len(filtered)}/{len(rows)} desde {source_queue} → {output_exchanges}")
+
+    print(f"[*] FilterWorkerYear esperando mensajes de {INPUT_QUEUES}...")
+    print(f"[*] Necesita recibir EOS de todas las fuentes para terminar")
+    
+    try:
         def consume_queue(mq_in, queue_name):
             try:
-                print(f"[FilterYear] Iniciando consumo de {queue_name}...")
-                # Crear una función wrapper que pase el source_queue
+                print(f"[FilterYear] 🚀 Iniciando consumo de {queue_name}...")
                 def on_message_wrapper(body):
-                    return on_message(body, queue_name)
+                    return enhanced_on_message(body, queue_name)
                 mq_in.start_consuming(on_message_wrapper)
             except Exception as e:
-                print(f"[FilterYear] Error consumiendo {queue_name}: {e}")
+                if not shutdown_event.is_set():
+                    print(f"[FilterYear] ❌ Error consumiendo {queue_name}: {e}")
         
         threads = []
         for i, mq_in in enumerate(mq_connections):
@@ -108,13 +145,24 @@ if __name__ == "__main__":
             thread.start()
             threads.append(thread)
         
-        # Esperar a que todos los hilos terminen
-        for thread in threads:
-            thread.join()
+        # Esperar hasta recibir EOS de todas las fuentes o timeout
+        timeout = 300  # 5 minutos timeout
+        if shutdown_event.wait(timeout):
+            print("[FilterYear] ✅ Terminando por EOS completo o señal")
+        else:
+            print(f"[FilterYear] ⏰ Timeout después de {timeout}s, terminando...")
             
     except KeyboardInterrupt:
         print("\n[FilterYear] Interrupción recibida")
     finally:
+        # Detener consumo
+        for mq in mq_connections:
+            try:
+                mq.stop_consuming()
+            except:
+                pass
+        
+        # Cerrar conexiones
         try:
             for mq_in in mq_connections:
                 mq_in.close()

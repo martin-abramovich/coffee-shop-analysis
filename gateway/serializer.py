@@ -8,16 +8,20 @@ def serialize_entity(entity) -> str:
     return ",".join(kv)
 
 def serialize_message(rows, stream_id="default", batch_id="b001",
-                      is_batch_end=False, is_eos=False) -> str:
+                      is_batch_end=False, is_eos=False) -> bytes:
     """
     Serializa un batch completo a texto plano con header + payload
     """
+    # Usar 'true'/'false' en minúsculas para compatibilidad con los workers
+    is_batch_end_str = "true" if is_batch_end else "false"
+    is_eos_str = "true" if is_eos else "false"
+
     header_parts = [
         f"type=data",
         f"stream_id={stream_id}",
         f"batch_id={batch_id}",
-        f"is_batch_end={is_batch_end}",
-        f"is_eos={is_eos}"
+        f"is_batch_end={is_batch_end_str}",
+        f"is_eos={is_eos_str}"
     ]
     header = ";".join(header_parts) + ";"
 
@@ -26,4 +30,5 @@ def serialize_message(rows, stream_id="default", batch_id="b001",
         payload_rows.append(serialize_entity(r))
     payload = "|".join(payload_rows) + ";"
 
-    return header + payload
+    # Devolver bytes para que Pika publique correctamente y los workers decodifiquen
+    return (header + payload).encode("utf-8")

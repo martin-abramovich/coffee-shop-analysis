@@ -127,13 +127,58 @@ def on_message(body):
         aggregator.accumulate_transactions(rows)
 
 if __name__ == "__main__":
-    shutdown_requested = False
+    import threading
+    
+    # Control de EOS - esperamos hasta recibir EOS
+    eos_received = threading.Event()
+    shutdown_event = threading.Event()
+    
+    def enhanced_on_message(body):
+        header, rows = deserialize_message(body)
+        
+        # Verificar si es mensaje de End of Stream
+        if header.get("is_eos") == "true":
+            print("[AggregatorQuery1] 🔚 End of Stream recibido. Generando resultados finales...")
+            
+            # Generar resultados finales
+            final_results = aggregator.generate_final_results()
+            
+            if final_results:
+                # Enviar resultados finales
+                results_header = {
+                    "query": "query1",
+                    "total_results": str(len(final_results)),
+                    "description": "Transacciones 2024-2025, 06:00-23:00, monto >= 75",
+                    "columns": "transaction_id,final_amount",
+                    "is_final_result": "true"
+                }
+                
+                # Enviar en batches si hay muchos resultados
+                batch_size = 100
+                total_batches = (len(final_results) + batch_size - 1) // batch_size
+                
+                for i in range(0, len(final_results), batch_size):
+                    batch = final_results[i:i + batch_size]
+                    batch_header = results_header.copy()
+                    batch_header["batch_number"] = str((i // batch_size) + 1)
+                    batch_header["total_batches"] = str(total_batches)
+                    
+                    result_msg = serialize_message(batch, batch_header)
+                    mq_out.send(result_msg)
+                    print(f"[AggregatorQuery1] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} transacciones")
+            
+            print("[AggregatorQuery1] 🎉 Resultados finales enviados. Agregador terminado.")
+            eos_received.set()
+            shutdown_event.set()
+            return
+        
+        # Procesamiento normal: acumular datos
+        if rows:
+            aggregator.accumulate_transactions(rows)
     
     def signal_handler(signum, frame):
-        global shutdown_requested
         print(f"[AggregatorQuery1] Señal {signum} recibida, cerrando...")
-        shutdown_requested = True
-        mq_in.stop_consuming()
+        shutdown_event.set()
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
@@ -147,12 +192,41 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery1 esperando mensajes...")
     print("[*] Query 1: Transacciones 2024-2025, 06:00-23:00, monto >= 75")
     print("[*] Columnas output: transaction_id, final_amount")
+    print("[*] 🎯 Esperará hasta recibir EOS para generar reporte")
     
     try:
-        mq_in.start_consuming(on_message)
+        def consume_messages():
+            try:
+                mq_in.start_consuming(enhanced_on_message)
+            except Exception as e:
+                if not shutdown_event.is_set():
+                    print(f"[AggregatorQuery1] ❌ Error consumiendo: {e}")
+        
+        # Iniciar consumo en thread separado
+        consumer_thread = threading.Thread(target=consume_messages)
+        consumer_thread.daemon = True
+        consumer_thread.start()
+        
+        # Esperar hasta recibir EOS o timeout
+        timeout = 300  # 5 minutos timeout
+        if shutdown_event.wait(timeout):
+            if eos_received.is_set():
+                print("[AggregatorQuery1] ✅ Terminando por EOS recibido")
+            else:
+                print("[AggregatorQuery1] ⚠️ Terminando por señal")
+        else:
+            print(f"[AggregatorQuery1] ⏰ Timeout después de {timeout}s, terminando...")
+            
     except KeyboardInterrupt:
         print("\n[AggregatorQuery1] Interrupción recibida")
     finally:
+        # Detener consumo
+        try:
+            mq_in.stop_consuming()
+        except:
+            pass
+        
+        # Cerrar conexiones
         try:
             mq_in.close()
         except:

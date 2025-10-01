@@ -7,7 +7,8 @@ def deserialize_message(body: bytes):
     try:
         text = body.decode("utf-8").strip()
         tokens = [t for t in text.split(';') if t != '']
-        if len(tokens) < 6:
+        # Permitimos mensajes sin payload (por ejemplo, EOS) que traen solo el header (5 tokens)
+        if len(tokens) < 5:
             raise ValueError("Mensaje demasiado corto")
 
         header_tokens = tokens[:5]
