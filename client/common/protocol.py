@@ -208,9 +208,7 @@ def encode_batch(entities: List[Union[Transactions, TransactionItems, Users, Sto
     
     # Verificar que todas las entidades sean del mismo tipo
     entity_type = get_entity_type(entities[0])
-    for entity in entities[1:]:
-        if get_entity_type(entity) != entity_type:
-            raise ValueError("Todas las entidades en un batch deben ser del mismo tipo")
+
     
     # Codificar header
     data = len(entities).to_bytes(4, byteorder='big', signed=False)  # 4 bytes: cantidad
