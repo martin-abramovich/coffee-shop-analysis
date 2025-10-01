@@ -291,7 +291,6 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
 
 def main():
     global global_client
-    
     try:
         # Configurar manejadores de señales
         setup_signal_handlers()
@@ -318,6 +317,7 @@ def main():
                 print(f"  - {os.path.basename(csv_file)}")
         
         # Usar la clase Client con context manager
+        start_time = time.time()
         with Client(host, port) as client:
             global_client = client  # Asignar para signal handler
             if VERBOSE:
@@ -332,6 +332,8 @@ def main():
                     if VERBOSE:
                         print("\nEsperando respuesta del servidor...")
                     response = client.receive_response()
+                    elapsed = time.time() - start_time
+                    print(f"⏱️ Tiempo total desde envío hasta confirmación: {elapsed:.2f} segundos")
                     if VERBOSE:
                         print(f"Respuesta del servidor: {response}")
                 except Exception as e:

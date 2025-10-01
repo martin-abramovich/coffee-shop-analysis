@@ -27,40 +27,39 @@ def read_string(data, offset):
     if offset + 4 > len(data):
         raise ValueError("Datos insuficientes para leer longitud de string")
     
-    length = struct.unpack('>I', data[offset:offset+4])[0]
-    offset += 4
+    length = int.from_bytes(data[offset:offset+4], byteorder='big')
     
+    offset += 4
     if offset + length > len(data):
         raise ValueError("Datos insuficientes para leer string")
-    
     string_data = data[offset:offset+length].decode('utf-8')
     return string_data, offset + length
 
 def read_uint32(data, offset):
-    """Lee un uint32 de 4 bytes (big-endian)"""
+    """Lee un uint32 de 4 bytes (big-endian, sin struct)"""
     if offset + 4 > len(data):
         raise ValueError("Datos insuficientes para leer uint32")
-    value = struct.unpack('>I', data[offset:offset+4])[0]
+    value = int.from_bytes(data[offset:offset+4], byteorder='big', signed=False)
     return value, offset + 4
 
 def read_float(data, offset):
-    """Lee un float de 4 bytes"""
+    """Lee un float de 4 bytes (IEEE 754, sin struct)"""
     if offset + 4 > len(data):
         raise ValueError("Datos insuficientes para leer float")
-    
-    value = struct.unpack('>f', data[offset:offset+4])[0]
-    return value, offset + 4
+    import array
+    value = array.array('f')
+    value.frombytes(data[offset:offset+4])
+    return value[0], offset + 4
 
 def read_int(data, offset):
     """Lee un int (usamos uint32 del cliente) de 4 bytes"""
-    # El cliente envía cantidad como uint32, usamos el mismo formato
     return read_uint32(data, offset)
 
 def read_uint64(data, offset):
-    """Lee un uint64 de 8 bytes (big-endian)"""
+    """Lee un uint64 de 8 bytes (big-endia)"""
     if offset + 8 > len(data):
         raise ValueError("Datos insuficientes para leer uint64")
-    value = struct.unpack('>Q', data[offset:offset+8])[0]
+    value = int.from_bytes(data[offset:offset+8], byteorder='big', signed=False)
     return value, offset + 8
 
 def read_bool(data, offset):
