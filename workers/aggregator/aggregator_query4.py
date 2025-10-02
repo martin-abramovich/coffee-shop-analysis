@@ -79,6 +79,8 @@ class AggregatorQuery4:
     
     def accumulate_transactions(self, rows):
         """Acumula conteos de transacciones de group_by_query4."""
+        processed_count = 0
+        
         for row in rows:
             store_id = row.get('store_id')
             user_id = row.get('user_id')
@@ -104,10 +106,13 @@ class AggregatorQuery4:
             
             # Acumular conteo de transacciones
             self.store_user_transactions[key] += transaction_count
+            processed_count += 1
         
         self.batches_received += 1
-        # Logs compactos
-        print(f"[AggregatorQuery4] Batch {self.batches_received}: {len(rows)} registros; total combinaciones={len(self.store_user_transactions)}")
+        
+        # OPTIMIZACIÓN: Logs menos frecuentes para mejor performance
+        if self.batches_received % 100 == 0 or self.batches_received <= 5:
+            print(f"[AggregatorQuery4] Batch {self.batches_received}: {processed_count}/{len(rows)} procesados; total combinaciones={len(self.store_user_transactions)}")
     
     def generate_final_results(self):
         """Genera los resultados finales para Query 4 con doble JOIN y TOP 3."""
@@ -125,21 +130,22 @@ class AggregatorQuery4:
             print(f"[AggregatorQuery4] WARNING: No hay users cargados. No se puede hacer JOIN.")
             return []
         
-        # Agrupar por store_id para encontrar TOP 3 por sucursal
+        # OPTIMIZACIÓN: Agrupar por store_id para encontrar TOP 3 por sucursal
         transactions_by_store = defaultdict(list)
+        missing_stores = set()
+        missing_users = set()
         
         for (store_id, user_id), transaction_count in self.store_user_transactions.items():
             # JOIN con stores: obtener store_name
             store_name = self.store_id_to_name.get(store_id)
             if not store_name:
-                # Mantener advertencia importante
-                print(f"[AggregatorQuery4] WARNING: store_id {store_id} no encontrado en stores")
+                missing_stores.add(store_id)
                 continue
             
             # JOIN con users: obtener birthdate
             birthdate = self.user_id_to_birthdate.get(user_id)
             if not birthdate:
-                print(f"[AggregatorQuery4] WARNING: user_id {user_id} no encontrado en users")
+                missing_users.add(user_id)
                 continue
             
             transactions_by_store[store_id].append({
@@ -148,6 +154,12 @@ class AggregatorQuery4:
                 'birthdate': birthdate,
                 'transaction_count': transaction_count
             })
+        
+        # Log de warnings solo si hay muchos faltantes
+        if len(missing_stores) > 0:
+            print(f"[AggregatorQuery4] WARNING: {len(missing_stores)} store_ids no encontrados en stores")
+        if len(missing_users) > 0:
+            print(f"[AggregatorQuery4] WARNING: {len(missing_users)} user_ids no encontrados en users")
         
         final_results = []
         
@@ -161,20 +173,17 @@ class AggregatorQuery4:
             
             store_name = top3_customers[0]['store_name'] if top3_customers else "Unknown"
             
-            # Reducir detalle por sucursal para no saturar
+            # OPTIMIZACIÓN: Log más compacto
             print(f"[AggregatorQuery4] {store_name}: TOP 3 de {len(customers)} clientes")
             
             # Agregar resultados del TOP 3
-            for i, customer in enumerate(top3_customers):
+            for customer in top3_customers:
                 final_results.append({
                     'store_name': customer['store_name'],
                     'birthdate': customer['birthdate']
                 })
-                
-                # Detalle por usuario opcionalmente podría quitarse si aún hay ruido
-                print(f"  {i+1}. User {customer['user_id']}: {customer['transaction_count']} transacciones, nacido {customer['birthdate']}")
         
-        # Ordenar resultados por store_name y luego por transaction_count (implícito en el orden)
+        # Ordenar resultados por store_name
         final_results.sort(key=lambda x: x['store_name'])
         
         print(f"[AggregatorQuery4] Resultados generados: {len(final_results)} registros de TOP 3")
@@ -211,13 +220,7 @@ def on_transactions_message(body):
     
     # Procesamiento normal: acumular conteos de transacciones
     if rows:
-        try:
-            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-            print(f"[AggregatorQuery4] DEBUG tx batch size={len(rows)} keys={sample_keys}")
-            if rows and isinstance(rows[0], dict):
-                print(f"[AggregatorQuery4] DEBUG tx sample={rows[0]}")
-        except Exception as _:
-            pass
+        # OPTIMIZACIÓN: Eliminar logs de debug excesivos
         aggregator.accumulate_transactions(rows)
 
 def on_stores_message(body):
@@ -240,13 +243,7 @@ def on_stores_message(body):
     
     # Cargar stores para JOIN
     if rows:
-        try:
-            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-            print(f"[AggregatorQuery4] DEBUG stores batch size={len(rows)} keys={sample_keys}")
-            if rows and isinstance(rows[0], dict):
-                print(f"[AggregatorQuery4] DEBUG stores sample={rows[0]}")
-        except Exception as _:
-            pass
+        # OPTIMIZACIÓN: Eliminar logs de debug excesivos
         aggregator.load_stores(rows)
 
 def on_users_message(body):
@@ -269,13 +266,7 @@ def on_users_message(body):
     
     # Cargar users para JOIN
     if rows:
-        try:
-            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-            print(f"[AggregatorQuery4] DEBUG users batch size={len(rows)} keys={sample_keys}")
-            if rows and isinstance(rows[0], dict):
-                print(f"[AggregatorQuery4] DEBUG users sample={rows[0]}")
-        except Exception as _:
-            pass
+        # OPTIMIZACIÓN: Eliminar logs de debug excesivos
         aggregator.load_users(rows)
 
 def generate_and_send_results():
@@ -325,7 +316,10 @@ def generate_and_send_results():
             except Exception as e:
                 print(f"[AggregatorQuery4] ❌ Error enviando resultados: {e}")
                 return
-            print(f"[AggregatorQuery4] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
+            
+            # OPTIMIZACIÓN: Log más compacto
+            if total_batches <= 5 or (i // batch_size + 1) % 10 == 0:
+                print(f"[AggregatorQuery4] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
     
     print("[AggregatorQuery4] 🎉 Resultados finales enviados. Deteniendo consumidores...")
     

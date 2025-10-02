@@ -65,8 +65,8 @@ def on_message(body):
     # Agrupar por (store_id, user_id) y contar transacciones
     store_user_metrics = group_by_store_and_user(rows)
     
-    # Enviar cada combinación (store, user) por separado
-    groups_sent = 0
+    # OPTIMIZACIÓN: Enviar como BATCH en lugar de mensajes individuales
+    batch_records = []
     total_transactions = 0
     
     for (store_id, user_id), metrics in store_user_metrics.items():
@@ -77,28 +77,26 @@ def on_message(body):
                 'user_id': user_id,
                 'transaction_count': metrics['transaction_count']
             }
-            
-            # Agregar información del grupo al header
-            group_header = header.copy() if header else {}
-            group_header["group_by"] = "store_user"
-            group_header["group_key"] = f"{store_id}|{user_id}"
-            group_header["store_id"] = store_id
-            group_header["user_id"] = user_id
-            group_header["group_size"] = 1
-            group_header["metrics_type"] = "query4_aggregated"
-            
-            # Enviar como lista con un solo elemento
-            out_msg = serialize_message([query4_record], group_header)
-            mq_out.send(out_msg)
-            groups_sent += 1
-            
-            # Acumular total para logging
+            batch_records.append(query4_record)
             total_transactions += metrics['transaction_count']
+    
+    # Enviar como UN SOLO BATCH grande
+    if batch_records:
+        # Agregar información del grupo al header
+        batch_header = header.copy() if header else {}
+        batch_header["group_by"] = "store_user"
+        batch_header["group_size"] = len(batch_records)
+        batch_header["metrics_type"] = "query4_aggregated"
+        batch_header["batch_type"] = "grouped_metrics"
+        
+        # Enviar como batch grande
+        out_msg = serialize_message(batch_records, batch_header)
+        mq_out.send(out_msg)
     
     unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
     unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
     
-    print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent={groups_sent} stores={unique_stores} users={unique_users} tx_total={total_transactions}")
+    print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent=1_batch stores={unique_stores} users={unique_users} tx_total={total_transactions}")
 
 if __name__ == "__main__":
     shutdown_requested = False
