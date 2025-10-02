@@ -71,8 +71,8 @@ def validate_transaction(item: dict) -> None:
         raise ValidationError(f"created_at debe ser formato ISO válido, recibido: {item['created_at']}")
 
 def validate_user(item: dict) -> None:
-    """Valida que un usuario tenga todos los campos requeridos y válidos"""
-    required_fields = ['user_id', 'birthdate']
+    """Valida que un usuario tenga campos válidos. birthdate es opcional."""
+    required_fields = ['user_id']
     
     for field in required_fields:
         if field not in item or item[field] is None or item[field] == '':
@@ -84,11 +84,12 @@ def validate_user(item: dict) -> None:
     if not item['user_id']:
         raise ValidationError("user_id no puede estar vacío")
     
-    # Validar formato de birthdate (ISO date)
-    try:
-        datetime.fromisoformat(item['birthdate']).date()
-    except ValueError:
-        raise ValidationError(f"birthdate debe ser formato ISO date válido, recibido: {item['birthdate']}")
+    # Validar formato de birthdate solo si viene presente y no vacío
+    if 'birthdate' in item and item['birthdate'] not in (None, ''):
+        try:
+            datetime.fromisoformat(item['birthdate']).date()
+        except ValueError:
+            raise ValidationError(f"birthdate debe ser formato ISO date válido, recibido: {item['birthdate']}")
 
 def validate_store(item: dict) -> None:
     """Valida que una tienda tenga todos los campos requeridos y válidos"""

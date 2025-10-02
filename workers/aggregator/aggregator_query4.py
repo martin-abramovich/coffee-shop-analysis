@@ -2,6 +2,7 @@ import sys
 import os
 import signal
 from collections import defaultdict
+import re
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -69,11 +70,22 @@ class AggregatorQuery4:
             user_id = row.get('user_id')
             birthdate = row.get('birthdate')
             
-            if user_id and birthdate:
-                normalized_user_id = canonicalize_id(user_id)
-                normalized_birthdate = birthdate.strip()
-                if normalized_user_id:
-                    self.user_id_to_birthdate[normalized_user_id] = normalized_birthdate
+            # Aceptar birthdate vacío como "sin fecha" y no indexarlo
+            if not user_id:
+                continue
+            if birthdate is None:
+                continue
+            normalized_user_id = canonicalize_id(user_id)
+            normalized_birthdate = birthdate.strip()
+            if normalized_birthdate == "":
+                # sin fecha
+                continue
+            # Validar formato simple YYYY-MM-DD
+            is_valid_format = bool(re.match(r"^\d{4}-\d{2}-\d{2}$", normalized_birthdate))
+            if not is_valid_format:
+                continue
+            if normalized_user_id:
+                self.user_id_to_birthdate[normalized_user_id] = normalized_birthdate
         
         print(f"[AggregatorQuery4] Users cargados para JOIN: {len(self.user_id_to_birthdate)}")
     
