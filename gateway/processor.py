@@ -33,7 +33,8 @@ def canonicalize_id(value: str) -> str:
 
 def validate_transaction(item: dict) -> None:
     """Valida que una transacción tenga todos los campos requeridos y válidos"""
-    required_fields = ['transaction_id', 'store_id', 'user_id', 'final_amount', 'created_at']
+    # user_id es OPCIONAL - algunas transacciones no lo tienen
+    required_fields = ['transaction_id', 'store_id', 'final_amount', 'created_at']
     
     for field in required_fields:
         if field not in item or item[field] is None or item[field] == '':
@@ -52,8 +53,12 @@ def validate_transaction(item: dict) -> None:
         item['transaction_id'] = item['transaction_id'].strip()
     if isinstance(item['store_id'], str):
         item['store_id'] = item['store_id'].strip()
-    if isinstance(item['user_id'], str):
+    
+    # solo normalizar si existe y no está vacío
+    if 'user_id' in item and item['user_id'] and isinstance(item['user_id'], str):
         item['user_id'] = canonicalize_id(item['user_id'])
+    elif 'user_id' not in item or not item['user_id']:
+        item['user_id'] = ''
 
     # Validar formato de transaction_id (no vacío)
     if not item['transaction_id']:
