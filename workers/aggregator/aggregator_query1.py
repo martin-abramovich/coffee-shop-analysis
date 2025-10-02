@@ -33,16 +33,11 @@ class AggregatorQuery1:
             # Validar que tengamos los campos necesarios
             if transaction_record.get('transaction_id') and transaction_record.get('final_amount') is not None:
                 self.accumulated_transactions.append(transaction_record)
-            else:
-                missing = []
-                if not transaction_record.get('transaction_id'):
-                    missing.append('transaction_id')
-                if transaction_record.get('final_amount') is None:
-                    missing.append('final_amount')
-                print(f"[AggregatorQuery1] Transacción descartada por campos faltantes: {missing}")
         
         self.total_received += len(rows)
-        print(f"[AggregatorQuery1] Acumuladas {len(rows)} transacciones. Total acumulado: {len(self.accumulated_transactions)}")
+        # Log solo cada 1000 transacciones recibidas
+        if self.total_received % 1000 < len(rows):
+            print(f"[AggregatorQuery1] Total acumulado: {len(self.accumulated_transactions)}/{self.total_received}")
     
     def generate_final_results(self):
         """Genera los resultados finales para Query 1."""

@@ -47,6 +47,7 @@ class AggregatorQuery4:
         self.stores_loaded = False
         self.users_loaded = False
         self.eos_received = False
+        self.results_sent = False
         
     def load_stores(self, rows):
         """Carga stores para construir el diccionario store_id -> store_name."""
@@ -192,6 +193,10 @@ shutdown_event = None
 
 def on_transactions_message(body):
     """Maneja mensajes de conteos de transacciones de group_by_query4."""
+    # Si ya enviamos resultados, ignorar mensajes adicionales
+    if aggregator.results_sent:
+        return
+    
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
@@ -199,8 +204,8 @@ def on_transactions_message(body):
         print("[AggregatorQuery4] EOS recibido en transacciones. Marcando como listo...")
         aggregator.eos_received = True
         
-        # Si ya tenemos stores y users cargados, generar resultados
-        if aggregator.stores_loaded and aggregator.users_loaded:
+        # Si ya tenemos stores y users cargados, generar resultados (una sola vez)
+        if aggregator.stores_loaded and aggregator.users_loaded and not aggregator.results_sent:
             generate_and_send_results()
         return
     
@@ -217,6 +222,10 @@ def on_transactions_message(body):
 
 def on_stores_message(body):
     """Maneja mensajes de stores para el JOIN."""
+    # Si ya enviamos resultados, ignorar mensajes adicionales
+    if aggregator.results_sent:
+        return
+    
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
@@ -224,8 +233,8 @@ def on_stores_message(body):
         print("[AggregatorQuery4] EOS recibido en stores. Marcando como listo...")
         aggregator.stores_loaded = True
         
-        # Si ya recibimos EOS de transacciones y users cargados, generar resultados
-        if aggregator.eos_received and aggregator.users_loaded:
+        # Si ya recibimos EOS de transacciones y users cargados, generar resultados (una sola vez)
+        if aggregator.eos_received and aggregator.users_loaded and not aggregator.results_sent:
             generate_and_send_results()
         return
     
@@ -242,6 +251,10 @@ def on_stores_message(body):
 
 def on_users_message(body):
     """Maneja mensajes de users para el JOIN."""
+    # Si ya enviamos resultados, ignorar mensajes adicionales
+    if aggregator.results_sent:
+        return
+    
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
@@ -249,8 +262,8 @@ def on_users_message(body):
         print("[AggregatorQuery4] EOS recibido en users. Marcando como listo...")
         aggregator.users_loaded = True
         
-        # Si ya recibimos EOS de transacciones y stores cargadas, generar resultados
-        if aggregator.eos_received and aggregator.stores_loaded:
+        # Si ya recibimos EOS de transacciones y stores cargadas, generar resultados (una sola vez)
+        if aggregator.eos_received and aggregator.stores_loaded and not aggregator.results_sent:
             generate_and_send_results()
         return
     
@@ -268,7 +281,16 @@ def on_users_message(body):
 def generate_and_send_results():
     """Genera y envía los resultados finales cuando todos los flujos terminaron."""
     global shutdown_event
+    
+    # Evitar procesamiento duplicado
+    if aggregator.results_sent:
+        print("[AggregatorQuery4] ⚠️ Resultados ya enviados, ignorando llamada duplicada")
+        return
+    
     print("[AggregatorQuery4] 🔚 Todos los flujos completados. Generando resultados finales...")
+    
+    # Marcar como enviado ANTES de generar para evitar race conditions
+    aggregator.results_sent = True
     
     # Generar resultados finales
     final_results = aggregator.generate_final_results()
@@ -298,10 +320,35 @@ def generate_and_send_results():
             batch_header["total_batches"] = str(total_batches)
             
             result_msg = serialize_message(batch, batch_header)
-            mq_out.send(result_msg)
+            try:
+                mq_out.send(result_msg)
+            except Exception as e:
+                print(f"[AggregatorQuery4] ❌ Error enviando resultados: {e}")
+                return
             print(f"[AggregatorQuery4] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
     
-    print("[AggregatorQuery4] 🎉 Resultados finales enviados. Agregador terminado.")
+    print("[AggregatorQuery4] 🎉 Resultados finales enviados. Deteniendo consumidores...")
+    
+    # Detener consumidores inmediatamente para evitar loops
+    try:
+        mq_transactions.stop_consuming()
+        print("[AggregatorQuery4] ✓ Consumidor de transacciones detenido")
+    except Exception as e:
+        print(f"[AggregatorQuery4] Error deteniendo transacciones: {e}")
+    
+    try:
+        mq_stores.stop_consuming()
+        print("[AggregatorQuery4] ✓ Consumidor de stores detenido")
+    except Exception as e:
+        print(f"[AggregatorQuery4] Error deteniendo stores: {e}")
+    
+    try:
+        mq_users.stop_consuming()
+        print("[AggregatorQuery4] ✓ Consumidor de users detenido")
+    except Exception as e:
+        print(f"[AggregatorQuery4] Error deteniendo users: {e}")
+    
+    # Señalar shutdown
     if shutdown_event:
         shutdown_event.set()
 

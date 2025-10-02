@@ -36,28 +36,37 @@ def filter_by_year(rows):
             continue
     return filtered
 
+# Estadísticas globales para logging eficiente
+stats = {"processed": 0, "filtered": 0, "batches": 0}
+
 def on_message(body, source_queue):
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print(f"[FilterByYear] End of Stream recibido desde {source_queue}. Reenviando...")
+        print(f"[FilterYear] 🔚 EOS desde {source_queue}. Stats: {stats['batches']} batches, {stats['processed']} in, {stats['filtered']} out")
         # Reenviar EOS a workers downstream usando los exchanges correctos
         eos_msg = serialize_message([], header)
         output_exchanges = OUTPUT_EXCHANGES[source_queue]
         for exchange_name in output_exchanges:
             mq_outputs[exchange_name].send(eos_msg)
-        print(f"[FilterByYear] EOS reenviado a {output_exchanges}")
         return
     
     # Procesamiento normal
+    stats["batches"] += 1
+    stats["processed"] += len(rows)
     filtered = filter_by_year(rows)
+    stats["filtered"] += len(filtered)
+    
     if filtered:
         out_msg = serialize_message(filtered, header)
         output_exchanges = OUTPUT_EXCHANGES[source_queue]
         for exchange_name in output_exchanges:
             mq_outputs[exchange_name].send(out_msg)
-        print(f"[FilterByYear] Procesadas {len(filtered)} registros de {len(rows)} desde {source_queue} → {output_exchanges}")
+    
+    # Log solo cada 1000 batches
+    if stats["batches"] % 1000 == 0:
+        print(f"[FilterYear] {stats['batches']} batches | {stats['processed']} in | {stats['filtered']} out")
 
 if __name__ == "__main__":
     # Control de EOS - necesitamos recibir EOS de todas las fuentes
