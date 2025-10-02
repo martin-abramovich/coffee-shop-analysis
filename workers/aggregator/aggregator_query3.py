@@ -272,12 +272,9 @@ if __name__ == "__main__":
         tpv_thread.start()
         stores_thread.start()
         
-        # Esperar hasta recibir EOS o timeout
-        timeout = 300  # 5 minutos timeout
-        if shutdown_event.wait(timeout):
-            print("[AggregatorQuery3] ✅ Terminando por EOS completo o señal")
-        else:
-            print(f"[AggregatorQuery3] ⏰ Timeout después de {timeout}s, terminando...")
+        # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
+        shutdown_event.wait()
+        print("[AggregatorQuery3] ✅ Terminando por EOS completo o señal")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery3] Interrupción recibida")

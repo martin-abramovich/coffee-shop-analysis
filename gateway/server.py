@@ -43,15 +43,18 @@ def read_uint32(data, offset):
     return value, offset + 4
 
 def read_float(data, offset):
-    """Lee un float de 4 bytes (IEEE 754, sin struct)"""
+    """Lee un float de 4 bytes (IEEE 754, big-endian, sin struct)"""
     if offset + 4 > len(data):
         raise ValueError("Datos insuficientes para leer float")
     import array, sys
     raw = data[offset:offset+4]
+    # Si la plataforma es little-endian, invierte los bytes
+    if sys.byteorder == 'little':
+        raw = raw[::-1]
     arr = array.array('f')
     arr.frombytes(raw)
     return arr[0], offset + 4
-
+    
 def read_int(data, offset):
     """Lee un int (usamos uint32 del cliente) de 4 bytes"""
     return read_uint32(data, offset)

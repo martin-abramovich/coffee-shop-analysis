@@ -216,15 +216,12 @@ if __name__ == "__main__":
         consumer_thread.daemon = True
         consumer_thread.start()
         
-        # Esperar hasta recibir EOS o timeout
-        timeout = 300  # 5 minutos timeout
-        if shutdown_event.wait(timeout):
-            if eos_received.is_set():
-                print("[AggregatorQuery1] ✅ Terminando por EOS recibido")
-            else:
-                print("[AggregatorQuery1] ⚠️ Terminando por señal")
+        # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
+        shutdown_event.wait()
+        if eos_received.is_set():
+            print("[AggregatorQuery1] ✅ Terminando por EOS recibido")
         else:
-            print(f"[AggregatorQuery1] ⏰ Timeout después de {timeout}s, terminando...")
+            print("[AggregatorQuery1] ⚠️ Terminando por señal")
             
     except KeyboardInterrupt:
         print("\n[AggregatorQuery1] Interrupción recibida")

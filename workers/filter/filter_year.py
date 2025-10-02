@@ -154,12 +154,9 @@ if __name__ == "__main__":
             thread.start()
             threads.append(thread)
         
-        # Esperar hasta recibir EOS de todas las fuentes o timeout
-        timeout = 300  # 5 minutos timeout
-        if shutdown_event.wait(timeout):
-            print("[FilterYear] ✅ Terminando por EOS completo o señal")
-        else:
-            print(f"[FilterYear] ⏰ Timeout después de {timeout}s, terminando...")
+        # Esperar hasta recibir EOS de todas las fuentes (sin timeout, espera indefinidamente)
+        shutdown_event.wait()
+        print("[FilterYear] ✅ Terminando por EOS completo o señal")
             
     except KeyboardInterrupt:
         print("\n[FilterYear] Interrupción recibida")

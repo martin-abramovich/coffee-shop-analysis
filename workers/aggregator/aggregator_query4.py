@@ -413,12 +413,9 @@ if __name__ == "__main__":
         stores_thread.start()
         users_thread.start()
         
-        # Esperar hasta recibir EOS o timeout
-        timeout = 300  # 5 minutos timeout
-        if shutdown_event.wait(timeout):
-            print("[AggregatorQuery4] ✅ Terminando por EOS completo o señal")
-        else:
-            print(f"[AggregatorQuery4] ⏰ Timeout después de {timeout}s, terminando...")
+        # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
+        shutdown_event.wait()
+        print("[AggregatorQuery4] ✅ Terminando por EOS completo o señal")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery4] Interrupción recibida")
