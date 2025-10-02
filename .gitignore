@@ -4,3 +4,4 @@ __pycache__/
 .data/*/
 !.data/dataset.zip
 results/*
+!results/results_expected.csv/*
