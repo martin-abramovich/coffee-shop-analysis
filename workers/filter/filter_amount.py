@@ -65,7 +65,7 @@ def on_message(body, source_exchange):
         for exchange_name in output_exchanges:
             mq_outputs[exchange_name].send(out_msg)
     
-    # Log solo cada 1000 batches
+    # Log cada 1000 batches
     if stats["batches"] % 1000 == 0:
         print(f"[FilterAmount] {stats['batches']} batches | {stats['processed']} in | {stats['filtered']} out")
 

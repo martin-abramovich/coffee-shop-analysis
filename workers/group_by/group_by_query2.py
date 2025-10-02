@@ -94,8 +94,10 @@ def on_message(body):
     # Agrupar por (mes, item_id) y calcular métricas
     month_item_metrics = group_by_month_and_item(rows)
     
-    # Enviar cada combinación (mes, item_id) por separado
-    groups_sent = 0
+    # OPTIMIZACIÓN: Enviar de a BATCHES de 1000 registros para evitar mensajes individuales
+    BATCH_SIZE = 1000
+    batch_records = []
+    batches_sent = 0
     total_quantity = 0
     total_subtotal = 0.0
     
@@ -104,34 +106,46 @@ def on_message(body):
             # Crear un registro único con las métricas de (mes, item_id)
             query2_record = {
                 'month': month,
-                'item_id': item_id,  # CAMBIO: enviar item_id en lugar de item_name
+                'item_id': item_id,
                 'total_quantity': metrics['total_quantity'],
                 'total_subtotal': metrics['total_subtotal']
             }
-            
-            # Agregar información del grupo al header
-            group_header = header.copy() if header else {}
-            group_header["group_by"] = "month_item"
-            group_header["group_key"] = f"{month}|{item_id}"
-            group_header["month"] = month
-            group_header["item_id"] = item_id  # CAMBIO: item_id en header
-            group_header["group_size"] = 1
-            group_header["metrics_type"] = "query2_aggregated"
-            
-            # Enviar como lista con un solo elemento
-            out_msg = serialize_message([query2_record], group_header)
-            mq_out.send(out_msg)
-            groups_sent += 1
-            
-            # Acumular totales para logging
+            batch_records.append(query2_record)
             total_quantity += metrics['total_quantity']
             total_subtotal += metrics['total_subtotal']
+            
+            # Enviar cuando alcanzamos el tamaño del batch
+            if len(batch_records) >= BATCH_SIZE:
+                batch_header = header.copy() if header else {}
+                batch_header["group_by"] = "month_item"
+                batch_header["batch_size"] = str(len(batch_records))
+                batch_header["metrics_type"] = "query2_aggregated"
+                batch_header["batch_type"] = "grouped_metrics"
+                
+                out_msg = serialize_message(batch_records, batch_header)
+                mq_out.send(out_msg)
+                batches_sent += 1
+                batch_records = []  # Limpiar para el siguiente batch
+    
+    # Enviar batch residual si queda algo
+    if batch_records:
+        batch_header = header.copy() if header else {}
+        batch_header["group_by"] = "month_item"
+        batch_header["batch_size"] = str(len(batch_records))
+        batch_header["metrics_type"] = "query2_aggregated"
+        batch_header["batch_type"] = "grouped_metrics"
+        batch_header["is_last_chunk"] = "true"
+        
+        out_msg = serialize_message(batch_records, batch_header)
+        mq_out.send(out_msg)
+        batches_sent += 1
     
     unique_months = len(set(month for month, _ in month_item_metrics.keys()))
-    unique_items = len(set(item_name for _, item_name in month_item_metrics.keys()))
+    unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
     
-    print(f"[GroupByQuery2] in={total_in} combinations_created={len(month_item_metrics)} groups_sent={groups_sent}")
-    print(f"[GroupByQuery2] unique_months={unique_months} unique_items={unique_items} total_qty={total_quantity} total_subtotal={total_subtotal:.2f}")
+    # Log más compacto
+    if batches_sent > 0:
+        print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items} qty={total_quantity} subtotal={total_subtotal:.2f}")
 
 if __name__ == "__main__":
     shutdown_requested = False

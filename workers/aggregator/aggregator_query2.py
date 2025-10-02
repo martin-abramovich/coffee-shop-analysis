@@ -194,7 +194,15 @@ shutdown_event = None
 
 def on_metrics_message(body):
     """Maneja mensajes de métricas de group_by_query2."""
-    header, rows = deserialize_message(body)
+    # Si ya enviamos resultados, ignorar mensajes adicionales
+    if aggregator.results_sent:
+        return
+    
+    try:
+        header, rows = deserialize_message(body)
+    except Exception as e:
+        print(f"[AggregatorQuery2] Error deserializando mensaje: {e}")
+        return
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
@@ -210,19 +218,19 @@ def on_metrics_message(body):
     
     # Procesamiento normal: acumular métricas parciales
     if rows:
-        try:
-            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-            print(f"[AggregatorQuery2] DEBUG metrics batch size={len(rows)} keys={sample_keys}")
-            if rows and isinstance(rows[0], dict):
-                print(f"[AggregatorQuery2] DEBUG metrics sample={rows[0]}")
-        except Exception as _:
-            pass
         aggregator.accumulate_metrics(rows)
-        # Si ya tenemos menu items cargados y aún no enviamos, y el lote actual vacía el buffer (batch pequeño), podemos emitir al recibir EOS
 
 def on_menu_items_message(body):
     """Maneja mensajes de menu_items para el JOIN."""
-    header, rows = deserialize_message(body)
+    # Si ya enviamos resultados, ignorar mensajes adicionales
+    if aggregator.results_sent:
+        return
+    
+    try:
+        header, rows = deserialize_message(body)
+    except Exception as e:
+        print(f"[AggregatorQuery2] Error deserializando mensaje: {e}")
+        return
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
@@ -238,21 +246,23 @@ def on_menu_items_message(body):
     
     # Cargar menu_items para JOIN
     if rows:
-        try:
-            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-            print(f"[AggregatorQuery2] DEBUG menu_items batch size={len(rows)} keys={sample_keys}")
-            if rows and isinstance(rows[0], dict):
-                print(f"[AggregatorQuery2] DEBUG menu_items sample={rows[0]}")
-        except Exception as _:
-            pass
         aggregator.load_menu_items(rows)
         # Marcar como cargado si recibimos datos, aunque aún no llegue EOS
         aggregator.menu_items_loaded = True
 
 def generate_and_send_results():
     """Genera y envía los resultados finales cuando ambos flujos terminaron."""
-    global shutdown_event
+    global shutdown_event, mq_out
+    
+    # Evitar procesamiento duplicado
+    if aggregator.results_sent:
+        print("[AggregatorQuery2] ⚠️ Resultados ya enviados, ignorando llamada duplicada")
+        return
+    
     print("[AggregatorQuery2] 🔚 Ambos flujos completados. Generando resultados finales...")
+    
+    # Marcar como enviado ANTES de generar para evitar race conditions
+    aggregator.results_sent = True
     
     # Generar resultados finales (TOP productos por mes)
     final_results = aggregator.generate_final_results()
@@ -280,12 +290,34 @@ def generate_and_send_results():
             batch_header["batch_number"] = str((i // batch_size) + 1)
             batch_header["total_batches"] = str(total_batches)
             result_msg = serialize_message(batch, batch_header)
-            mq_out.send(result_msg)
-            print(f"[AggregatorQuery2] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
+            
+            # Intentar enviar con reconexión automática si falla
+            max_retries = 3
+            sent = False
+            for retry in range(max_retries):
+                try:
+                    mq_out.send(result_msg)
+                    sent = True
+                    print(f"[AggregatorQuery2] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+                    break
+                except Exception as e:
+                    print(f"[AggregatorQuery2] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
+                    if retry < max_retries - 1:
+                        try:
+                            mq_out.close()
+                        except:
+                            pass
+                        print(f"[AggregatorQuery2] Reconectando exchange de salida...")
+                        from middleware.middleware import MessageMiddlewareExchange
+                        mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            
+            if not sent:
+                print(f"[AggregatorQuery2] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
+    else:
+        print("[AggregatorQuery2] No hay resultados para enviar")
     
-    aggregator.results_sent = True
-    print("[AggregatorQuery2] 🎉 Resultados finales enviados. Agregador terminado.")
-    shutdown_event.set()  # Señalar que terminamos
+    print("[AggregatorQuery2] Resultados finales enviados. Agregador terminado.")
+    shutdown_event.set()
 
 if __name__ == "__main__":
     import threading

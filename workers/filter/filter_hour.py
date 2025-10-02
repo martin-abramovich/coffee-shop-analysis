@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 from datetime import datetime
 
 # Añadir paths al PYTHONPATH
@@ -56,17 +57,29 @@ def filter_by_hour(rows):
 # Estadísticas globales para logging eficiente
 stats = {"processed": 0, "filtered": 0, "batches": 0}
 
+eos_received = set()
+eos_lock = threading.Lock()
+
 def on_message(body, source_exchange):
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print(f"[FilterHour] 🔚 EOS desde {source_exchange}. Stats: {stats['batches']} batches, {stats['processed']} in, {stats['filtered']} out")
-        # Reenviar EOS a workers downstream usando los exchanges correctos
-        eos_msg = serialize_message([], header)
-        output_exchanges = OUTPUT_EXCHANGES[source_exchange]
-        for exchange_name in output_exchanges:
-            mq_outputs[exchange_name].send(eos_msg)
+        print(f"[FilterHour] 🔚 EOS recibido desde {source_exchange}. Stats: {stats['batches']} batches, {stats['processed']} in, {stats['filtered']} out")
+        
+        with eos_lock:
+            eos_received.add(source_exchange)
+            print(f"[FilterHour] EOS tracking: {eos_received} / {set(INPUT_EXCHANGES)}")
+            
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los inputs
+            if len(eos_received) == len(INPUT_EXCHANGES):
+                print(f"[FilterHour] ✅ EOS recibido de TODAS las fuentes. Reenviando downstream...")
+                # Reenviar EOS a TODOS los outputs
+                eos_msg = serialize_message([], header)
+                for input_exchange, output_exchanges in OUTPUT_EXCHANGES.items():
+                    for exchange_name in output_exchanges:
+                        mq_outputs[exchange_name].send(eos_msg)
+                        print(f"[FilterHour] EOS enviado a {exchange_name}")
         return
     
     # Procesamiento normal
@@ -83,7 +96,7 @@ def on_message(body, source_exchange):
         for exchange_name in output_exchanges:
             mq_outputs[exchange_name].send(out_msg)
     
-    # Log solo cada 1000 batches
+    # Log cada 1000 batches
     if stats["batches"] % 1000 == 0:
         print(f"[FilterHour] {stats['batches']} batches | {stats['processed']} in | {stats['filtered']} out")
 
@@ -119,8 +132,6 @@ if __name__ == "__main__":
     print(f"[*] FilterWorkerHour esperando mensajes de {INPUT_EXCHANGES}...")
     try:
         # Procesar cada exchange en un hilo separado
-        import threading
-        
         def consume_exchange(mq_in, exchange_name):
             try:
                 print(f"[FilterHour] Iniciando consumo de {exchange_name}...")

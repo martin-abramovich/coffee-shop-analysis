@@ -300,19 +300,53 @@ def handle_client(conn, addr, mq_map):
     finally:
         # Enviar EOS (End of Stream) a todas las colas cuando termina el cliente
         print(f"[GATEWAY] Enviando End of Stream a todas las colas...")
+        
+        # Preparar mensaje EOS una sola vez
+        eos_msg = serialize_message(
+            [], 
+            stream_id="default",
+            batch_id="EOS", 
+            is_batch_end=True,
+            is_eos=True
+        )
+        
         for entity_type, mq in mq_map.items():
             try:
-                eos_msg = serialize_message(
-                    [], 
-                    stream_id="default",
-                    batch_id="EOS", 
-                    is_batch_end=True,
-                    is_eos=True
-                )
                 mq.send(eos_msg)
-                print(f"[GATEWAY] EOS enviado a cola {entity_type}")
+                print(f"[GATEWAY] ✅ EOS enviado a {entity_type}")
             except Exception as e:
-                print(f"[GATEWAY] Error enviando EOS a {entity_type}: {e}")
+                print(f"[GATEWAY] ❌ Error enviando EOS a {entity_type}: {e}")
+                # Intentar reconectar y reenviar
+                print(f"[GATEWAY] Intentando reconectar {entity_type} para enviar EOS...")
+                try:
+                    from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
+                    # Cerrar la conexión vieja
+                    try:
+                        mq.close()
+                    except:
+                        pass
+                    
+                    # Recrear la conexión
+                    if entity_type == "stores":
+                        mq_map[entity_type] = MessageMiddlewareExchange(
+                            host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                            exchange_name="stores_raw",
+                            route_keys=["q3", "q4"]
+                        )
+                    else:
+                        mq_map[entity_type] = MessageMiddlewareQueue(
+                            host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                            queue_name=f"{entity_type}_raw"
+                        )
+                    
+                    # Reintentar envío de EOS
+                    mq_map[entity_type].send(eos_msg)
+                    print(f"[GATEWAY] ✅ EOS reenviado exitosamente a {entity_type}")
+                except Exception as retry_e:
+                    print(f"[GATEWAY] ❌ CRÍTICO: No se pudo enviar EOS a {entity_type}: {retry_e}")
+                    print(f"[GATEWAY] ⚠️ Los aggregators de {entity_type} no recibirán EOS y quedarán esperando")
+        
+        print(f"[GATEWAY] ✅ Todos los EOS enviados")
         
         # Enviar ACK final al cliente (4 bytes longitud + payload UTF-8)
         try:

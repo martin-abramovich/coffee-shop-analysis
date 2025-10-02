@@ -31,6 +31,7 @@ class AggregatorQuery3:
         self.batches_received = 0
         self.stores_loaded = False
         self.eos_received = False
+        self.results_sent = False  # ← AGREGADO: Flag para evitar procesamiento duplicado
         
     def load_stores(self, rows):
         """Carga stores para construir el diccionario store_id -> store_name."""
@@ -68,8 +69,9 @@ class AggregatorQuery3:
             self.semester_store_tpv[key] += total_payment_value
         
         self.batches_received += 1
-        print(f"[AggregatorQuery3] Procesado batch {self.batches_received} con {len(rows)} registros")
-        print(f"[AggregatorQuery3] Total combinaciones (semestre, store_id): {len(self.semester_store_tpv)}")
+        # Log solo cada 10 batches para no saturar
+        if self.batches_received % 10 == 0 or self.batches_received == 1:
+            print(f"[AggregatorQuery3] Procesado batch {self.batches_received} con {len(rows)} registros. Total combinaciones: {len(self.semester_store_tpv)}")
     
     def generate_final_results(self):
         """Genera los resultados finales para Query 3 con JOIN."""
@@ -135,58 +137,68 @@ shutdown_event = None
 
 def on_tpv_message(body):
     """Maneja mensajes de TPV de group_by_query3."""
-    header, rows = deserialize_message(body)
+    # Si ya enviamos resultados, ignorar mensajes adicionales
+    if aggregator.results_sent:
+        return
+    
+    try:
+        header, rows = deserialize_message(body)
+    except Exception as e:
+        print(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
+        return
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         print("[AggregatorQuery3] EOS recibido en TPV. Marcando como listo para generar resultados...")
         aggregator.eos_received = True
         
-        # Si ya tenemos stores cargadas, generar resultados
-        if aggregator.stores_loaded:
+        # Si ya tenemos stores cargadas y no hemos enviado, generar resultados
+        if aggregator.stores_loaded and not aggregator.results_sent:
             generate_and_send_results()
         return
     
     # Procesamiento normal: acumular TPV parciales
     if rows:
-        try:
-            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-            print(f"[AggregatorQuery3] DEBUG tpv batch size={len(rows)} keys={sample_keys}")
-            if rows and isinstance(rows[0], dict):
-                print(f"[AggregatorQuery3] DEBUG tpv sample={rows[0]}")
-        except Exception as _:
-            pass
         aggregator.accumulate_tpv(rows)
 
 def on_stores_message(body):
     """Maneja mensajes de stores para el JOIN."""
-    header, rows = deserialize_message(body)
+    # Si ya enviamos resultados, ignorar mensajes adicionales
+    if aggregator.results_sent:
+        return
+    
+    try:
+        header, rows = deserialize_message(body)
+    except Exception as e:
+        print(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
+        return
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         print("[AggregatorQuery3] EOS recibido en stores. Marcando como listo...")
         aggregator.stores_loaded = True
         
-        # Si ya recibimos EOS de TPV, generar resultados
-        if aggregator.eos_received:
+        # Si ya recibimos EOS de TPV y no hemos enviado, generar resultados
+        if aggregator.eos_received and not aggregator.results_sent:
             generate_and_send_results()
         return
     
     # Cargar stores para JOIN
     if rows:
-        try:
-            sample_keys = list(rows[0].keys()) if isinstance(rows[0], dict) else []
-            print(f"[AggregatorQuery3] DEBUG stores batch size={len(rows)} keys={sample_keys}")
-            if rows and isinstance(rows[0], dict):
-                print(f"[AggregatorQuery3] DEBUG stores sample={rows[0]}")
-        except Exception as _:
-            pass
         aggregator.load_stores(rows)
 
 def generate_and_send_results():
     """Genera y envía los resultados finales cuando ambos flujos terminaron."""
-    global shutdown_event
-    print("[AggregatorQuery3] 🔚 Ambos flujos completados. Generando resultados finales...")
+    global shutdown_event, mq_out
+    
+    # Evitar procesamiento duplicado
+    if aggregator.results_sent:
+        return
+    
+    print("[AggregatorQuery3] Ambos flujos completados. Generando resultados finales...")
+    
+    # Marcar como enviado ANTES de generar para evitar race conditions
+    aggregator.results_sent = True
     
     # Generar resultados finales
     final_results = aggregator.generate_final_results()
@@ -216,10 +228,31 @@ def generate_and_send_results():
             batch_header["total_batches"] = str(total_batches)
             
             result_msg = serialize_message(batch, batch_header)
-            mq_out.send(result_msg)
-            print(f"[AggregatorQuery3] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
+            
+            # Intentar enviar con reconexión automática si falla
+            max_retries = 3
+            sent = False
+            for retry in range(max_retries):
+                try:
+                    mq_out.send(result_msg)
+                    sent = True
+                    print(f"[AggregatorQuery3] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+                    break
+                except Exception as e:
+                    print(f"[AggregatorQuery3] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
+                    if retry < max_retries - 1:
+                        try:
+                            mq_out.close()
+                        except:
+                            pass
+                        print(f"[AggregatorQuery3] Reconectando exchange de salida...")
+                        from middleware.middleware import MessageMiddlewareExchange
+                        mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            
+            if not sent:
+                print(f"[AggregatorQuery3] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
     
-    print("[AggregatorQuery3] 🎉 Resultados finales enviados. Agregador terminado.")
+    print("[AggregatorQuery3] Resultados finales enviados. Agregador terminado.")
     if shutdown_event:
         shutdown_event.set()
 
@@ -248,21 +281,20 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery3 esperando mensajes...")
     print("[*] Query 3: TPV por semestre y sucursal 2024-2025 (06:00-23:00)")
     print("[*] Consumiendo de 2 fuentes: TPV + stores para JOIN")
-    print("[*] 🎯 Esperará hasta recibir EOS de ambas fuentes para generar reporte")
     
     def consume_tpv():
         try:
             mq_tpv.start_consuming(on_tpv_message)
         except Exception as e:
             if not shutdown_event.is_set():
-                print(f"[AggregatorQuery3] ❌ Error en consumo de TPV: {e}")
+                print(f"[AggregatorQuery3] Error en consumo de TPV: {e}")
     
     def consume_stores():
         try:
             mq_stores.start_consuming(on_stores_message)
         except Exception as e:
             if not shutdown_event.is_set():
-                print(f"[AggregatorQuery3] ❌ Error en consumo de stores: {e}")
+                print(f"[AggregatorQuery3] Error en consumo de stores: {e}")
     
     try:
         # Ejecutar ambos consumidores en paralelo como daemon threads
@@ -272,9 +304,8 @@ if __name__ == "__main__":
         tpv_thread.start()
         stores_thread.start()
         
-        # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
+        # Esperar hasta recibir EOS
         shutdown_event.wait()
-        print("[AggregatorQuery3] ✅ Terminando por EOS completo o señal")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery3] Interrupción recibida")

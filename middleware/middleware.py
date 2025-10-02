@@ -57,9 +57,13 @@ class MessageMiddlewareExchange(MessageMiddleware):
 		self.route_keys = route_keys
 
 		try:
-			self.connection = pika.BlockingConnection(
-				pika.ConnectionParameters(host=self.host)
+			# Configurar heartbeat para evitar "missed heartbeat from client"
+			# Debe ser igual o mayor que RABBITMQ_HEARTBEAT del servidor (300s)
+			parameters = pika.ConnectionParameters(
+				host=self.host,
+				heartbeat=300  # 5 minutos, mismo que el servidor
 			)
+			self.connection = pika.BlockingConnection(parameters)
 			self.channel = self.connection.channel()
 			self.channel.exchange_declare(exchange=self.exchange_name, exchange_type="topic")
 		except pika.exceptions.AMQPConnectionError:
@@ -132,9 +136,13 @@ class MessageMiddlewareQueue(MessageMiddleware):
 		self.queue_name = queue_name
 
 		try:
-			self.connection = pika.BlockingConnection(
-				pika.ConnectionParameters(host=self.host)
+			# Configurar heartbeat para evitar "missed heartbeat from client"
+			# Debe ser igual o mayor que RABBITMQ_HEARTBEAT del servidor (300s)
+			parameters = pika.ConnectionParameters(
+				host=self.host,
+				heartbeat=300  # 5 minutos, mismo que el servidor
 			)
+			self.connection = pika.BlockingConnection(parameters)
 			self.channel = self.connection.channel()
 			self.channel.basic_qos(prefetch_count=1)
 			self.channel.queue_declare(queue=self.queue_name)

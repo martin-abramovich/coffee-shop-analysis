@@ -271,14 +271,13 @@ def on_users_message(body):
 
 def generate_and_send_results():
     """Genera y envía los resultados finales cuando todos los flujos terminaron."""
-    global shutdown_event
+    global shutdown_event, mq_out
     
     # Evitar procesamiento duplicado
     if aggregator.results_sent:
-        print("[AggregatorQuery4] ⚠️ Resultados ya enviados, ignorando llamada duplicada")
         return
     
-    print("[AggregatorQuery4] 🔚 Todos los flujos completados. Generando resultados finales...")
+    print("[AggregatorQuery4] Todos los flujos completados. Generando resultados finales...")
     
     # Marcar como enviado ANTES de generar para evitar race conditions
     aggregator.results_sent = True
@@ -311,17 +310,35 @@ def generate_and_send_results():
             batch_header["total_batches"] = str(total_batches)
             
             result_msg = serialize_message(batch, batch_header)
-            try:
-                mq_out.send(result_msg)
-            except Exception as e:
-                print(f"[AggregatorQuery4] ❌ Error enviando resultados: {e}")
+            
+            # Intentar enviar con reconexión automática si falla
+            max_retries = 3
+            sent = False
+            for retry in range(max_retries):
+                try:
+                    mq_out.send(result_msg)
+                    sent = True
+                    break
+                except Exception as e:
+                    print(f"[AggregatorQuery4] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
+                    if retry < max_retries - 1:
+                        # Reconectar
+                        try:
+                            mq_out.close()
+                        except:
+                            pass
+                        print(f"[AggregatorQuery4] Reconectando exchange de salida...")
+                        mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            
+            if not sent:
+                print(f"[AggregatorQuery4] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
                 return
             
-            # OPTIMIZACIÓN: Log más compacto
+            # Log solo si hay pocos batches o cada 10
             if total_batches <= 5 or (i // batch_size + 1) % 10 == 0:
-                print(f"[AggregatorQuery4] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} registros")
+                print(f"[AggregatorQuery4] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
     
-    print("[AggregatorQuery4] 🎉 Resultados finales enviados. Deteniendo consumidores...")
+    print("[AggregatorQuery4] Resultados finales enviados. Deteniendo consumidores...")
     
     # Detener consumidores inmediatamente para evitar loops
     try:
@@ -374,28 +391,27 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery4 esperando mensajes...")
     print("[*] Query 4: TOP 3 clientes por sucursal (más compras 2024-2025)")
     print("[*] Consumiendo de 3 fuentes: transacciones + stores + users para doble JOIN")
-    print("[*] 🎯 Esperará hasta recibir EOS de las 3 fuentes para generar reporte")
     
     def consume_transactions():
         try:
             mq_transactions.start_consuming(on_transactions_message)
         except Exception as e:
             if not shutdown_event.is_set():
-                print(f"[AggregatorQuery4] ❌ Error en consumo de transacciones: {e}")
+                print(f"[AggregatorQuery4] Error en consumo de transacciones: {e}")
     
     def consume_stores():
         try:
             mq_stores.start_consuming(on_stores_message)
         except Exception as e:
             if not shutdown_event.is_set():
-                print(f"[AggregatorQuery4] ❌ Error en consumo de stores: {e}")
+                print(f"[AggregatorQuery4] Error en consumo de stores: {e}")
             
     def consume_users():
         try:
             mq_users.start_consuming(on_users_message)
         except Exception as e:
             if not shutdown_event.is_set():
-                print(f"[AggregatorQuery4] ❌ Error en consumo de users: {e}")
+                print(f"[AggregatorQuery4] Error en consumo de users: {e}")
     
     try:
         # Ejecutar los 3 consumidores en paralelo como daemon threads
@@ -409,7 +425,7 @@ if __name__ == "__main__":
         
         # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
         shutdown_event.wait()
-        print("[AggregatorQuery4] ✅ Terminando por EOS completo o señal")
+        print("[AggregatorQuery4] Terminando por señal de shutdown")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery4] Interrupción recibida")

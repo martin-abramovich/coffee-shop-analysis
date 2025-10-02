@@ -98,8 +98,10 @@ def on_message(body):
     # Agrupar por (semestre, store_id) y calcular TPV
     semester_store_metrics = group_by_semester_and_store(rows)
     
-    # Enviar cada combinación (semestre, store) por separado
-    groups_sent = 0
+    # OPTIMIZACIÓN: Enviar de a BATCHES de 1000 registros para evitar mensajes individuales
+    BATCH_SIZE = 1000
+    batch_records = []
+    batches_sent = 0
     total_tpv = 0.0
     
     for (semester, store_id), metrics in semester_store_metrics.items():
@@ -110,29 +112,41 @@ def on_message(body):
                 'store_id': store_id,
                 'total_payment_value': metrics['total_payment_value']
             }
-            
-            # Agregar información del grupo al header
-            group_header = header.copy() if header else {}
-            group_header["group_by"] = "semester_store"
-            group_header["group_key"] = f"{semester}|{store_id}"
-            group_header["semester"] = semester
-            group_header["store_id"] = store_id
-            group_header["group_size"] = 1
-            group_header["metrics_type"] = "query3_aggregated"
-            
-            # Enviar como lista con un solo elemento
-            out_msg = serialize_message([query3_record], group_header)
-            mq_out.send(out_msg)
-            groups_sent += 1
-            
-            # Acumular total para logging
+            batch_records.append(query3_record)
             total_tpv += metrics['total_payment_value']
+            
+            # Enviar cuando alcanzamos el tamaño del batch
+            if len(batch_records) >= BATCH_SIZE:
+                batch_header = header.copy() if header else {}
+                batch_header["group_by"] = "semester_store"
+                batch_header["batch_size"] = str(len(batch_records))
+                batch_header["metrics_type"] = "query3_aggregated"
+                batch_header["batch_type"] = "grouped_metrics"
+                
+                out_msg = serialize_message(batch_records, batch_header)
+                mq_out.send(out_msg)
+                batches_sent += 1
+                batch_records = []  # Limpiar para el siguiente batch
+    
+    # Enviar batch residual si queda algo
+    if batch_records:
+        batch_header = header.copy() if header else {}
+        batch_header["group_by"] = "semester_store"
+        batch_header["batch_size"] = str(len(batch_records))
+        batch_header["metrics_type"] = "query3_aggregated"
+        batch_header["batch_type"] = "grouped_metrics"
+        batch_header["is_last_chunk"] = "true"
+        
+        out_msg = serialize_message(batch_records, batch_header)
+        mq_out.send(out_msg)
+        batches_sent += 1
     
     unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
     unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
     
-    print(f"[GroupByQuery3] in={total_in} combinations_created={len(semester_store_metrics)} groups_sent={groups_sent}")
-    print(f"[GroupByQuery3] unique_semesters={unique_semesters} unique_stores={unique_stores} total_tpv={total_tpv:.2f}")
+    # Log más compacto
+    if batches_sent > 0:
+        print(f"[GroupByQuery3] in={total_in} created={len(semester_store_metrics)} sent={batches_sent}_batches semesters={unique_semesters} stores={unique_stores} tpv={total_tpv:.2f}")
 
 if __name__ == "__main__":
     shutdown_requested = False

@@ -81,50 +81,7 @@ class AggregatorQuery1:
 
 # Instancia global del agregador
 aggregator = AggregatorQuery1()
-
-def on_message(body):
-    header, rows = deserialize_message(body)
-    
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        print("[AggregatorQuery1] End of Stream recibido. Generando resultados finales...")
-        
-        # Generar resultados finales
-        final_results = aggregator.generate_final_results()
-        
-        if final_results:
-            # Enviar resultados finales
-            results_header = {
-                "type": "result",
-                "stream_id": "query1_results",
-                "batch_id": "final",
-                "is_batch_end": "true",
-                "is_eos": "false",
-                "query": "query1",
-                "total_results": str(len(final_results)),
-                "description": "Transacciones_2024-2025_06:00-23:00_monto>=75",
-                "columns": "transaction_id:final_amount",
-                "is_final_result": "true"
-            }
-            
-            # Enviar en batches si hay muchos resultados
-            batch_size = 100
-            for i in range(0, len(final_results), batch_size):
-                batch = final_results[i:i + batch_size]
-                batch_header = results_header.copy()
-                batch_header["batch_number"] = str((i // batch_size) + 1)
-                batch_header["total_batches"] = str((len(final_results) + batch_size - 1) // batch_size)
-                
-                result_msg = serialize_message(batch, batch_header)
-                mq_out.send(result_msg)
-                print(f"[AggregatorQuery1] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} transacciones")
-        
-        print("[AggregatorQuery1] Resultados finales enviados. Agregador terminado.")
-        return
-    
-    # Procesamiento normal: acumular datos
-    if rows:
-        aggregator.accumulate_transactions(rows)
+results_sent = False  # Flag para evitar procesamiento duplicado de EOS
 
 if __name__ == "__main__":
     import threading
@@ -134,11 +91,18 @@ if __name__ == "__main__":
     shutdown_event = threading.Event()
     
     def enhanced_on_message(body):
+        global results_sent
         header, rows = deserialize_message(body)
         
         # Verificar si es mensaje de End of Stream
         if header.get("is_eos") == "true":
+            # Prevenir procesamiento duplicado de EOS
+            if results_sent:
+                print("[AggregatorQuery1] ⚠️ EOS duplicado ignorado (resultados ya enviados)")
+                return
+            
             print("[AggregatorQuery1] 🔚 End of Stream recibido. Generando resultados finales...")
+            results_sent = True
             
             # Generar resultados finales
             final_results = aggregator.generate_final_results()
@@ -168,13 +132,33 @@ if __name__ == "__main__":
                     batch_header["batch_number"] = str((i // batch_size) + 1)
                     batch_header["total_batches"] = str(total_batches)
                     
-                    # Debug: ver qué hay en el header antes de serializar
-                    if i == 0:
-                        print(f"[AggregatorQuery1] DEBUG - Header completo a enviar: {batch_header}")
-                    
                     result_msg = serialize_message(batch, batch_header)
-                    mq_out.send(result_msg)
-                    print(f"[AggregatorQuery1] ✅ Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']} con {len(batch)} transacciones")
+                    
+                    # Intentar enviar con reconexión automática si falla
+                    max_retries = 3
+                    sent = False
+                    for retry in range(max_retries):
+                        try:
+                            mq_out.send(result_msg)
+                            sent = True
+                            # Log cada 100 batches para no saturar
+                            if (i // batch_size + 1) % 100 == 0 or (i // batch_size + 1) == total_batches:
+                                print(f"[AggregatorQuery1] Progreso: batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+                            break
+                        except Exception as e:
+                            print(f"[AggregatorQuery1] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
+                            if retry < max_retries - 1:
+                                try:
+                                    mq_out.close()
+                                except:
+                                    pass
+                                from middleware.middleware import MessageMiddlewareExchange
+                                mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+                    
+                    if not sent:
+                        print(f"[AggregatorQuery1] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
+                
+                print(f"[AggregatorQuery1] Envío completado: {total_batches} batches, {len(final_results)} transacciones")
             
             print("[AggregatorQuery1] 🎉 Resultados finales enviados. Agregador terminado.")
             eos_received.set()

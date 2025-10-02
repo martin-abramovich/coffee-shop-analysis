@@ -11,6 +11,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_LOG_LEVEL: warning
+      RABBITMQ_HEARTBEAT: 300  # 5 minutes instead of default 60s
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 5s
