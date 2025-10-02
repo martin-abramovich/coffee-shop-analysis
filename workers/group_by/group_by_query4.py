@@ -66,7 +66,7 @@ def on_message(body):
     store_user_metrics = group_by_store_and_user(rows)
     
     # OPTIMIZACIÓN: Enviar de a BATCHES de 100 registros para evitar mensajes gigantes
-    BATCH_SIZE = 100
+    BATCH_SIZE = 1000
     batch_records = []
     total_transactions = 0
     batches_sent = 0

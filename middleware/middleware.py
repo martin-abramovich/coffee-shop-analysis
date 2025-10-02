@@ -57,8 +57,6 @@ class MessageMiddlewareExchange(MessageMiddleware):
 		self.route_keys = route_keys
 
 		try:
-			# Configurar heartbeat para evitar "missed heartbeat from client"
-			# Debe ser igual o mayor que RABBITMQ_HEARTBEAT del servidor (300s)
 			parameters = pika.ConnectionParameters(
 				host=self.host,
 				heartbeat=300  # 5 minutos, mismo que el servidor
@@ -136,8 +134,6 @@ class MessageMiddlewareQueue(MessageMiddleware):
 		self.queue_name = queue_name
 
 		try:
-			# Configurar heartbeat para evitar "missed heartbeat from client"
-			# Debe ser igual o mayor que RABBITMQ_HEARTBEAT del servidor (300s)
 			parameters = pika.ConnectionParameters(
 				host=self.host,
 				heartbeat=300  # 5 minutos, mismo que el servidor

@@ -123,7 +123,6 @@ class AggregatorQuery2:
             final_results.append({
                 'year_month_created_at': month,
                 'item_name': most_sold['item_name'],
-                'item_id': most_sold['item_id'],
                 'sellings_qty': most_sold['total_quantity'],
                 'profit_sum': '',
                 'metric_type': 'most_sold'
@@ -131,7 +130,6 @@ class AggregatorQuery2:
             final_results.append({
                 'year_month_created_at': month,
                 'item_name': most_profitable['item_name'],
-                'item_id': most_profitable['item_id'],
                 'sellings_qty': '',
                 'profit_sum': most_profitable['total_subtotal'],
                 'metric_type': 'most_profitable'
@@ -147,7 +145,7 @@ class AggregatorQuery2:
         print(f"[AggregatorQuery2] Ejemplos de resultados:")
         for i, result in enumerate(final_results[:5]):
             if 'sellings_qty' in result:
-                print(f"  {i+1}. {result['year_month_created_at']} - {result['item_name']} (id={result.get('item_id','?')}): {result['sellings_qty']} unidades vendidas")
+                print(f"  {i+1}. {result['year_month_created_at']} - {result['item_name']}: {result['sellings_qty']} unidades vendidas")
             if 'profit_sum' in result:
                 try:
                     print(f"      Ganancia: ${float(result['profit_sum']):.2f}")
