@@ -15,8 +15,23 @@ from workers.utils import deserialize_message, serialize_message
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 NUM_FILTER_HOUR_WORKERS = int(os.environ.get('NUM_FILTER_HOUR_WORKERS', '2'))
 
+# ID del worker (auto-detectado del hostname o env var)
+def get_worker_id():
+    worker_id_env = os.environ.get('WORKER_ID')
+    if worker_id_env is not None:
+        return int(worker_id_env)
+    
+    import socket, re
+    hostname = socket.gethostname()
+    match = re.search(r'[-_](\d+)$', hostname)
+    if match:
+        return int(match.group(1)) - 1
+    return 0
+
+WORKER_ID = get_worker_id()
+
 INPUT_EXCHANGE = "transactions_hour"     # exchange del filtro por hora
-INPUT_ROUTING_KEY = "hour"               # routing key del filtro por hora
+INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
 OUTPUT_EXCHANGE = "transactions_query3"  # exchange de salida para query 3
 ROUTING_KEY = "query3"                   # routing para topic
 
@@ -156,25 +171,25 @@ def on_message(body):
     
     unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
     unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
-    
     # Log más compacto
     if batches_sent > 0:
         print(f"[GroupByQuery3] in={total_in} created={len(semester_store_metrics)} sent={batches_sent}_batches semesters={unique_semesters} stores={unique_stores} tpv={total_tpv:.2f}")
 
 if __name__ == "__main__":
+    import threading
+    print(f"[GroupByQuery3] Iniciando worker {WORKER_ID}...")
     shutdown_requested = False
     
     def signal_handler(signum, frame):
         global shutdown_requested
         print(f"[GroupByQuery3] Señal {signum} recibida, cerrando...")
-        shutdown_requested = True
         mq_in.stop_consuming()
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: suscripción al exchange del filtro por hora
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
+    # Entrada: suscripción al exchange del filtro por hora con routing keys específicas
+    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
     
     # Salida: exchange para datos agregados de query 3
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])

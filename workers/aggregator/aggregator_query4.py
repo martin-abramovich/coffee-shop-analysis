@@ -1,8 +1,9 @@
 import sys
 import os
 import signal
-from collections import defaultdict
+import threading
 import re
+from collections import defaultdict
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -12,13 +13,21 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGE = "transactions_query4"    # exchange del group_by_query4
-INPUT_ROUTING_KEY = "query4"              # routing key del group_by_query4
-STORES_EXCHANGE = "stores_raw"            # exchange de stores para JOIN
-STORES_ROUTING_KEY = "q4"                 # routing key para query 4
-USERS_QUEUE = "users_raw"                 # cola de users para JOIN
+NUM_GROUP_BY_QUERY4_WORKERS = int(os.environ.get('NUM_GROUP_BY_QUERY4_WORKERS', '2'))
+
+INPUT_EXCHANGE = "transactions_query4"    # exchange del group_by query 4
+INPUT_ROUTING_KEY = "query4"              # routing key del group_by
 OUTPUT_EXCHANGE = "results_query4"        # exchange de salida para resultados finales
 ROUTING_KEY = "query4_results"            # routing para resultados
+
+# Control de EOS
+eos_count = 0
+eos_lock = threading.Lock()
+
+# Exchanges adicionales para JOIN
+STORES_EXCHANGE = "stores_raw"
+STORES_ROUTING_KEY = "q4"
+USERS_QUEUE = "users_raw"
 
 def canonicalize_id(value):
     """Normaliza IDs: si vienen como "123.0" convertir a "123"; sino, devolver strip()."""
@@ -222,17 +231,26 @@ def on_transactions_message(body):
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[AggregatorQuery4] EOS recibido en transacciones. Marcando como listo...")
-        aggregator.eos_received = True
-        
-        # Si ya tenemos stores y users cargados, generar resultados (una sola vez)
-        if aggregator.stores_loaded and aggregator.users_loaded and not aggregator.results_sent:
-            generate_and_send_results()
+        with eos_lock:
+            global eos_count
+            eos_count += 1
+            print(f"[AggregatorQuery4] EOS recibido en transacciones ({eos_count}/{NUM_GROUP_BY_QUERY4_WORKERS})")
+            
+            # Solo procesar cuando recibimos de TODOS los workers
+            if eos_count < NUM_GROUP_BY_QUERY4_WORKERS:
+                print(f"[AggregatorQuery4] Esperando más EOS...")
+                return
+            
+            print("[AggregatorQuery4] ✅ EOS recibido de TODOS los workers. Marcando como listo...")
+            aggregator.eos_received = True
+            
+            # Si ya tenemos stores y users cargados, generar resultados (una sola vez)
+            if aggregator.stores_loaded and aggregator.users_loaded and not aggregator.results_sent:
+                generate_and_send_results()
         return
     
     # Procesamiento normal: acumular conteos de transacciones
     if rows:
-        # OPTIMIZACIÓN: Eliminar logs de debug excesivos
         aggregator.accumulate_transactions(rows)
 
 def on_stores_message(body):

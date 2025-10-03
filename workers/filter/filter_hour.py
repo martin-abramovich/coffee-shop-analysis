@@ -18,6 +18,7 @@ NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
 
 # Número de workers downstream de filter_amount
 NUM_FILTER_AMOUNT_WORKERS = int(os.environ.get('NUM_FILTER_AMOUNT_WORKERS', '2'))
+NUM_GROUP_BY_QUERY3_WORKERS = int(os.environ.get('NUM_GROUP_BY_QUERY3_WORKERS', '2'))
 
 # Wrapper para round-robin
 class RoundRobinExchange:
@@ -64,15 +65,18 @@ INPUT_EXCHANGES = {
     "transaction_items_year": [f"worker_{WORKER_ID}", "eos"]
 }
 
-# Exchanges de salida - diferenciamos por destino
+# Exchanges de salida - diferenciamos por destino (scalable = round-robin)
 OUTPUT_EXCHANGES = {
     "transactions_year": {
-        "scalable": ["transactions_hour_amount"],  # Para filter_amount (round-robin)
-        "broadcast": ["transactions_hour"]  # Para group_by_query3 (broadcast)
+        "scalable": [
+            ("transactions_hour_amount", NUM_FILTER_AMOUNT_WORKERS),  # Para filter_amount
+            ("transactions_hour", NUM_GROUP_BY_QUERY3_WORKERS)  # Para group_by_query3
+        ]
     },
     "transaction_items_year": {
-        "scalable": [],  # transaction_items no va a filter_amount
-        "broadcast": ["transaction_items_hour"]  # Para group_by_query3 (broadcast)
+        "scalable": [
+            ("transaction_items_hour", NUM_GROUP_BY_QUERY3_WORKERS)  # Para group_by_query3
+        ]
     }
 }
 
@@ -139,19 +143,14 @@ def on_message(body, source_exchange):
             
             if all_complete:
                 print(f"[FilterHour Worker {WORKER_ID}] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
-                # Reenviar EOS a TODOS los outputs
+                # Reenviar EOS a TODOS los outputs (broadcast)
                 eos_msg = serialize_message([], header)
                 
                 for input_exchange, destinations in OUTPUT_EXCHANGES.items():
                     # EOS a exchanges escalables (broadcast)
-                    for exchange_name in destinations["scalable"]:
+                    for exchange_name, _ in destinations["scalable"]:
                         mq_outputs_scalable[exchange_name].send_eos(eos_msg)
                         print(f"[FilterHour Worker {WORKER_ID}] EOS broadcast a {exchange_name}")
-                    
-                    # EOS a exchanges broadcast
-                    for exchange_name in destinations["broadcast"]:
-                        mq_outputs_broadcast[exchange_name].send(eos_msg)
-                        print(f"[FilterHour Worker {WORKER_ID}] EOS enviado a {exchange_name}")
                 
                 shutdown_event.set()
         return
@@ -164,12 +163,8 @@ def on_message(body, source_exchange):
         destinations = OUTPUT_EXCHANGES[source_exchange]
         
         # Enviar a exchanges escalables (round-robin)
-        for exchange_name in destinations["scalable"]:
+        for exchange_name, _ in destinations["scalable"]:
             mq_outputs_scalable[exchange_name].send(out_msg)
-        
-        # Enviar a exchanges broadcast
-        for exchange_name in destinations["broadcast"]:
-            mq_outputs_broadcast[exchange_name].send(out_msg)
 
 if __name__ == "__main__":
     print(f"[FilterHour] Iniciando worker {WORKER_ID}...")
@@ -196,22 +191,15 @@ if __name__ == "__main__":
         mq_in = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
         mq_connections.append((mq_in, exchange_name))
 
-    # Salida: crear exchanges escalables y broadcast
-    mq_outputs_scalable = {}  # Para filter_amount (round-robin)
-    mq_outputs_broadcast = {}  # Para group_by_query3 (broadcast)
+    # Salida: crear exchanges escalables (round-robin)
+    mq_outputs_scalable = {}
     
     for input_exchange, destinations in OUTPUT_EXCHANGES.items():
-        # Exchanges escalables (round-robin para filter_amount)
-        for exchange_name in destinations["scalable"]:
-            route_keys = [f"worker_{i}" for i in range(NUM_FILTER_AMOUNT_WORKERS)] + ["eos"]
+        # Exchanges escalables (round-robin)
+        for exchange_name, num_workers in destinations["scalable"]:
+            route_keys = [f"worker_{i}" for i in range(num_workers)] + ["eos"]
             raw_exchange = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
-            mq_outputs_scalable[exchange_name] = RoundRobinExchange(raw_exchange, NUM_FILTER_AMOUNT_WORKERS)
-        
-        # Exchanges broadcast (para group_by_query3)
-        for exchange_name in destinations["broadcast"]:
-            mq_outputs_broadcast[exchange_name] = MessageMiddlewareExchange(
-                RABBIT_HOST, exchange_name, ["hour"]
-            )
+            mq_outputs_scalable[exchange_name] = RoundRobinExchange(raw_exchange, num_workers)
 
     print(f"[*] FilterWorkerHour esperando mensajes de {INPUT_EXCHANGES}...")
     try:
