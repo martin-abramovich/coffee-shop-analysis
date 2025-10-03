@@ -10,6 +10,38 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from gateway.processor import process_batch_by_type
 from gateway.serializer import serialize_message
 
+# Wrapper para manejar round-robin en exchanges escalables
+class ScalableExchangeWrapper:
+    """Wrapper que distribuye mensajes con round-robin y hace broadcast de EOS"""
+    def __init__(self, exchange, num_workers):
+        self.exchange = exchange
+        self.num_workers = num_workers
+        self.current_worker = 0
+    
+    def send(self, msg, is_eos=False):
+        """Envía mensaje con round-robin o broadcast si es EOS"""
+        if is_eos:
+            # Broadcast: enviar a todos los workers usando routing key "eos"
+            # Cada worker estará escuchando tanto su routing key específica como "eos"
+            self.exchange.channel.basic_publish(
+                exchange=self.exchange.exchange_name,
+                routing_key="eos",
+                body=msg
+            )
+        else:
+            # Round-robin: enviar solo al worker actual
+            routing_key = f"worker_{self.current_worker}"
+            self.exchange.channel.basic_publish(
+                exchange=self.exchange.exchange_name,
+                routing_key=routing_key,
+                body=msg
+            )
+            # Avanzar al siguiente worker
+            self.current_worker = (self.current_worker + 1) % self.num_workers
+    
+    def close(self):
+        self.exchange.close()
+
 HOST = "0.0.0.0"
 PORT = 9000
 
@@ -215,6 +247,23 @@ def handle_client(conn, addr, mq_map):
     total_processed = 0
     batch_count = 0
     
+    # Extraer configuración de escalado
+    config = mq_map.get("_config", {})
+    num_filter_year_workers = config.get("num_filter_year_workers", 1)
+    
+    # Crear wrappers para exchanges escalables (transactions y transaction_items)
+    scalable_exchanges = {}
+    if "transactions" in mq_map and hasattr(mq_map["transactions"], "exchange_name"):
+        scalable_exchanges["transactions"] = ScalableExchangeWrapper(
+            mq_map["transactions"], 
+            num_filter_year_workers
+        )
+    if "transaction_items" in mq_map and hasattr(mq_map["transaction_items"], "exchange_name"):
+        scalable_exchanges["transaction_items"] = ScalableExchangeWrapper(
+            mq_map["transaction_items"], 
+            num_filter_year_workers
+        )
+    
     try:
         while True:
             data = conn.recv(4096)  # Buffer más grande para datos binarios
@@ -252,39 +301,48 @@ def handle_client(conn, addr, mq_map):
                             is_batch_end=True,
                             is_eos=False
                         )
-                        # Seleccionar cola por tipo de entidad
-                        target_mq = mq_map.get(entity_type)
-                        if not target_mq:
-                            print(f"[GATEWAY] No hay cola configurada para tipo {entity_type}, descartando batch")
-                        else:
+                        
+                        # Usar wrapper escalable si existe, sino usar mq_map directamente
+                        if entity_type in scalable_exchanges:
+                            # Enviar con round-robin para exchanges escalables
                             try:
-                                target_mq.send(msg)
+                                scalable_exchanges[entity_type].send(msg, is_eos=False)
                             except Exception as e:
                                 print(f"[GATEWAY] Error enviando al middleware ({entity_type}): {e}")
-                                # Si es error de conexión, intentar reconectar
-                                if "conexión" in str(e).lower() or "connection" in str(e).lower():
-                                    print(f"[GATEWAY] Intentando reconectar {entity_type}...")
-                                    try:
-                                        # Recrear la conexión
-                                        from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
-                                        if entity_type == "stores":
-                                            mq_map[entity_type] = MessageMiddlewareExchange(
-                                                host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
-                                                exchange_name="stores_raw",
-                                                route_keys=["q3", "q4"]
-                                            )
-                                        else:
-                                            mq_map[entity_type] = MessageMiddlewareQueue(
-                                                host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
-                                                queue_name=f"{entity_type}_raw"
-                                            )
-                                        print(f"[GATEWAY] Reconectado {entity_type}, reintentando envío...")
-                                        target_mq = mq_map[entity_type]
-                                        target_mq.send(msg)
-                                        print(f"[GATEWAY] Reenvío exitoso para {entity_type}")
-                                    except Exception as retry_e:
-                                        print(f"[GATEWAY] Error en reconexión de {entity_type}: {retry_e}")
-                                        # Continuar sin este mensaje
+                        else:
+                            # Envío normal para colas/exchanges no escalables
+                            target_mq = mq_map.get(entity_type)
+                            if not target_mq:
+                                print(f"[GATEWAY] No hay cola configurada para tipo {entity_type}, descartando batch")
+                            else:
+                                try:
+                                    target_mq.send(msg)
+                                except Exception as e:
+                                    print(f"[GATEWAY] Error enviando al middleware ({entity_type}): {e}")
+                                    # Si es error de conexión, intentar reconectar
+                                    if "conexión" in str(e).lower() or "connection" in str(e).lower():
+                                        print(f"[GATEWAY] Intentando reconectar {entity_type}...")
+                                        try:
+                                            # Recrear la conexión
+                                            from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
+                                            if entity_type == "stores":
+                                                mq_map[entity_type] = MessageMiddlewareExchange(
+                                                    host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                                                    exchange_name="stores_raw",
+                                                    route_keys=["q3", "q4"]
+                                                )
+                                            else:
+                                                mq_map[entity_type] = MessageMiddlewareQueue(
+                                                    host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                                                    queue_name=f"{entity_type}_raw"
+                                                )
+                                            print(f"[GATEWAY] Reconectado {entity_type}, reintentando envío...")
+                                            target_mq = mq_map[entity_type]
+                                            target_mq.send(msg)
+                                            print(f"[GATEWAY] Reenvío exitoso para {entity_type}")
+                                        except Exception as retry_e:
+                                            print(f"[GATEWAY] Error en reconexión de {entity_type}: {retry_e}")
+                                            # Continuar sin este mensaje
 
                 except ValueError as e:
                     # Si faltan datos del batch, esperar más datos sin limpiar el buffer
@@ -317,9 +375,18 @@ def handle_client(conn, addr, mq_map):
         )
         
         for entity_type, mq in mq_map.items():
+            # Saltar la entrada de configuración
+            if entity_type == "_config":
+                continue
+                
             try:
-                mq.send(eos_msg)
-                print(f"[GATEWAY] ✅ EOS enviado a {entity_type}")
+                # Usar wrapper escalable si existe para hacer broadcast de EOS
+                if entity_type in scalable_exchanges:
+                    scalable_exchanges[entity_type].send(eos_msg, is_eos=True)
+                    print(f"[GATEWAY] ✅ EOS broadcast a todos los workers de {entity_type}")
+                else:
+                    mq.send(eos_msg)
+                    print(f"[GATEWAY] ✅ EOS enviado a {entity_type}")
             except Exception as e:
                 print(f"[GATEWAY] ❌ Error enviando EOS a {entity_type}: {e}")
                 # Intentar reconectar y reenviar

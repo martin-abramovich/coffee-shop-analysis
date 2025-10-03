@@ -25,10 +25,6 @@ def signal_handler(signum, frame):
     if global_client:
         global_client.request_shutdown()
     
-    # Dar tiempo para cerrar la conexión
-    import time
-    time.sleep(1)
-    
     if VERBOSE:
         print("👋 Cliente terminado por señal del sistema.")
     sys.exit(0)

@@ -12,13 +12,69 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGES = ["transactions_year", "transaction_items_year"]  # exchanges del filtro por año
-INPUT_ROUTING_KEY = "year"               # routing key del filtro por año
-OUTPUT_EXCHANGES = {
-    "transactions_year": ["transactions_hour"],      # exchange para transactions filtradas por hora
-    "transaction_items_year": ["transaction_items_hour"]  # exchange para transaction_items filtradas por hora
+
+# Número de workers upstream de filter_year
+NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
+
+# Número de workers downstream de filter_amount
+NUM_FILTER_AMOUNT_WORKERS = int(os.environ.get('NUM_FILTER_AMOUNT_WORKERS', '2'))
+
+# Wrapper para round-robin
+class RoundRobinExchange:
+    def __init__(self, exchange, num_workers):
+        self.exchange = exchange
+        self.num_workers = num_workers
+        self.current = 0
+    
+    def send(self, msg):
+        routing_key = f"worker_{self.current}"
+        self.exchange.channel.basic_publish(
+            exchange=self.exchange.exchange_name,
+            routing_key=routing_key,
+            body=msg
+        )
+        self.current = (self.current + 1) % self.num_workers
+    
+    def send_eos(self, msg):
+        # Broadcast EOS a todos
+        self.exchange.channel.basic_publish(
+            exchange=self.exchange.exchange_name,
+            routing_key="eos",
+            body=msg
+        )
+
+# ID del worker (auto-detectado del hostname o env var)
+def get_worker_id():
+    worker_id_env = os.environ.get('WORKER_ID')
+    if worker_id_env is not None:
+        return int(worker_id_env)
+    
+    import socket, re
+    hostname = socket.gethostname()
+    match = re.search(r'[-_](\d+)$', hostname)
+    if match:
+        return int(match.group(1)) - 1
+    return 0
+
+WORKER_ID = get_worker_id()
+
+# Exchanges de entrada - cada worker escucha su routing key específica + eos
+INPUT_EXCHANGES = {
+    "transactions_year": [f"worker_{WORKER_ID}", "eos"],
+    "transaction_items_year": [f"worker_{WORKER_ID}", "eos"]
 }
-ROUTING_KEY = "hour"                     # routing para topic
+
+# Exchanges de salida - diferenciamos por destino
+OUTPUT_EXCHANGES = {
+    "transactions_year": {
+        "scalable": ["transactions_hour_amount"],  # Para filter_amount (round-robin)
+        "broadcast": ["transactions_hour"]  # Para group_by_query3 (broadcast)
+    },
+    "transaction_items_year": {
+        "scalable": [],  # transaction_items no va a filter_amount
+        "broadcast": ["transaction_items_hour"]  # Para group_by_query3 (broadcast)
+    }
+}
 
 # Ventana horaria (inclusive)
 START_HOUR = 6   # 06:00
@@ -54,10 +110,8 @@ def filter_by_hour(rows):
             continue
     return filtered
 
-# Estadísticas globales para logging eficiente
-stats = {"processed": 0, "filtered": 0, "batches": 0}
-
-eos_received = set()
+# Control de EOS - necesitamos recibir EOS de cada worker de filter_year por cada exchange
+eos_count_per_exchange = {}
 eos_lock = threading.Lock()
 
 def on_message(body, source_exchange):
@@ -65,43 +119,62 @@ def on_message(body, source_exchange):
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print(f"[FilterHour] 🔚 EOS recibido desde {source_exchange}. Stats: {stats['batches']} batches, {stats['processed']} in, {stats['filtered']} out")
-        
         with eos_lock:
-            eos_received.add(source_exchange)
-            print(f"[FilterHour] EOS tracking: {eos_received} / {set(INPUT_EXCHANGES)}")
+            # Incrementar contador de EOS para este exchange
+            if source_exchange not in eos_count_per_exchange:
+                eos_count_per_exchange[source_exchange] = 0
+            eos_count_per_exchange[source_exchange] += 1
             
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los inputs
-            if len(eos_received) == len(INPUT_EXCHANGES):
-                print(f"[FilterHour] ✅ EOS recibido de TODAS las fuentes. Reenviando downstream...")
+            total_eos = sum(eos_count_per_exchange.values())
+            expected_eos = NUM_FILTER_YEAR_WORKERS * len(INPUT_EXCHANGES)
+            
+            print(f"[FilterHour] 🔚 EOS recibido desde {source_exchange} ({eos_count_per_exchange[source_exchange]}/{NUM_FILTER_YEAR_WORKERS})")
+            print(f"[FilterHour] Total EOS: {total_eos}/{expected_eos}")
+            
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de TODOS los exchanges
+            all_complete = all(
+                eos_count_per_exchange.get(ex, 0) >= NUM_FILTER_YEAR_WORKERS 
+                for ex in INPUT_EXCHANGES.keys()
+            )
+            
+            if all_complete:
+                print(f"[FilterHour Worker {WORKER_ID}] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
                 # Reenviar EOS a TODOS los outputs
                 eos_msg = serialize_message([], header)
-                for input_exchange, output_exchanges in OUTPUT_EXCHANGES.items():
-                    for exchange_name in output_exchanges:
-                        mq_outputs[exchange_name].send(eos_msg)
-                        print(f"[FilterHour] EOS enviado a {exchange_name}")
+                
+                for input_exchange, destinations in OUTPUT_EXCHANGES.items():
+                    # EOS a exchanges escalables (broadcast)
+                    for exchange_name in destinations["scalable"]:
+                        mq_outputs_scalable[exchange_name].send_eos(eos_msg)
+                        print(f"[FilterHour Worker {WORKER_ID}] EOS broadcast a {exchange_name}")
+                    
+                    # EOS a exchanges broadcast
+                    for exchange_name in destinations["broadcast"]:
+                        mq_outputs_broadcast[exchange_name].send(eos_msg)
+                        print(f"[FilterHour Worker {WORKER_ID}] EOS enviado a {exchange_name}")
+                
+                shutdown_event.set()
         return
     
     # Procesamiento normal
-    total_in = len(rows)
-    stats["batches"] += 1
-    stats["processed"] += total_in
-    
     filtered = filter_by_hour(rows)
-    stats["filtered"] += len(filtered)
     
     if filtered:
         out_msg = serialize_message(filtered, header)
-        output_exchanges = OUTPUT_EXCHANGES[source_exchange]
-        for exchange_name in output_exchanges:
-            mq_outputs[exchange_name].send(out_msg)
-    
-    # Log cada 1000 batches
-    if stats["batches"] % 1000 == 0:
-        print(f"[FilterHour] {stats['batches']} batches | {stats['processed']} in | {stats['filtered']} out")
+        destinations = OUTPUT_EXCHANGES[source_exchange]
+        
+        # Enviar a exchanges escalables (round-robin)
+        for exchange_name in destinations["scalable"]:
+            mq_outputs_scalable[exchange_name].send(out_msg)
+        
+        # Enviar a exchanges broadcast
+        for exchange_name in destinations["broadcast"]:
+            mq_outputs_broadcast[exchange_name].send(out_msg)
 
 if __name__ == "__main__":
+    print(f"[FilterHour] Iniciando worker {WORKER_ID}...")
     shutdown_requested = False
+    shutdown_event = threading.Event()
     mq_connections = []
     
     def signal_handler(signum, frame):
@@ -117,17 +190,28 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: múltiples exchanges (transactions_year y transaction_items_year)
+    # Entrada: múltiples exchanges con routing keys específicas
     mq_connections = []
-    for exchange_name in INPUT_EXCHANGES:
-        mq_in = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, [INPUT_ROUTING_KEY])
-        mq_connections.append(mq_in)
+    for exchange_name, route_keys in INPUT_EXCHANGES.items():
+        mq_in = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
+        mq_connections.append((mq_in, exchange_name))
 
-    # Salida: múltiples exchanges según el tipo de datos
-    mq_outputs = {}
-    for input_exchange, output_exchanges in OUTPUT_EXCHANGES.items():
-        for exchange_name in output_exchanges:
-            mq_outputs[exchange_name] = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, [ROUTING_KEY])
+    # Salida: crear exchanges escalables y broadcast
+    mq_outputs_scalable = {}  # Para filter_amount (round-robin)
+    mq_outputs_broadcast = {}  # Para group_by_query3 (broadcast)
+    
+    for input_exchange, destinations in OUTPUT_EXCHANGES.items():
+        # Exchanges escalables (round-robin para filter_amount)
+        for exchange_name in destinations["scalable"]:
+            route_keys = [f"worker_{i}" for i in range(NUM_FILTER_AMOUNT_WORKERS)] + ["eos"]
+            raw_exchange = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
+            mq_outputs_scalable[exchange_name] = RoundRobinExchange(raw_exchange, NUM_FILTER_AMOUNT_WORKERS)
+        
+        # Exchanges broadcast (para group_by_query3)
+        for exchange_name in destinations["broadcast"]:
+            mq_outputs_broadcast[exchange_name] = MessageMiddlewareExchange(
+                RABBIT_HOST, exchange_name, ["hour"]
+            )
 
     print(f"[*] FilterWorkerHour esperando mensajes de {INPUT_EXCHANGES}...")
     try:
@@ -143,15 +227,14 @@ if __name__ == "__main__":
                 print(f"[FilterHour] Error consumiendo {exchange_name}: {e}")
         
         threads = []
-        for i, mq_in in enumerate(mq_connections):
-            thread = threading.Thread(target=consume_exchange, args=(mq_in, INPUT_EXCHANGES[i]))
+        for mq_in, exchange_name in mq_connections:
+            thread = threading.Thread(target=consume_exchange, args=(mq_in, exchange_name))
             thread.daemon = True
             thread.start()
             threads.append(thread)
         
-        # Esperar a que todos los hilos terminen
-        for thread in threads:
-            thread.join()
+        # Esperar shutdown event
+        shutdown_event.wait()
             
     except KeyboardInterrupt:
         print("\n[FilterHour] Interrupción recibida")

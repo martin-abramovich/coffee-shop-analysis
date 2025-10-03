@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -10,10 +11,26 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGES = ["transactions_hour"]  # solo transactions_hour (transaction_items no pasa por amount)
-INPUT_ROUTING_KEY = "hour"               # routing key del filtro por hora
+NUM_FILTER_HOUR_WORKERS = int(os.environ.get('NUM_FILTER_HOUR_WORKERS', '2'))
+
+# ID del worker (auto-detectado del hostname o env var)
+def get_worker_id():
+    worker_id_env = os.environ.get('WORKER_ID')
+    if worker_id_env is not None:
+        return int(worker_id_env)
+    
+    import socket, re
+    hostname = socket.gethostname()
+    match = re.search(r'[-_](\d+)$', hostname)
+    if match:
+        return int(match.group(1)) - 1
+    return 0
+
+WORKER_ID = get_worker_id()
+
+INPUT_EXCHANGES = {"transactions_hour_amount": [f"worker_{WORKER_ID}", "eos"]}  # routing keys específicas
 OUTPUT_EXCHANGES = {
-    "transactions_hour": ["transactions_amount"]      # exchange para transactions filtradas por amount
+    "transactions_hour_amount": ["transactions_amount"]      # exchange para transactions filtradas por amount
 }
 ROUTING_KEY = "amount"                   # routing para topic
 THRESHOLD = 75.0
@@ -35,41 +52,41 @@ def filter_by_amount(rows, threshold: float):
             continue
     return filtered
 
-# Estadísticas globales para logging eficiente
-stats = {"processed": 0, "filtered": 0, "batches": 0}
+# Control de EOS - necesitamos recibir EOS de todos los workers de filter_hour
+eos_count = 0
+eos_lock = threading.Lock()
 
 def on_message(body, source_exchange):
+    global eos_count
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print(f"[FilterAmount] 🔚 EOS desde {source_exchange}. Stats: {stats['batches']} batches, {stats['processed']} in, {stats['filtered']} out (threshold>={THRESHOLD})")
-        # Reenviar EOS a workers downstream usando los exchanges correctos
-        eos_msg = serialize_message([], header)
-        output_exchanges = OUTPUT_EXCHANGES[source_exchange]
-        for exchange_name in output_exchanges:
-            mq_outputs[exchange_name].send(eos_msg)
+        with eos_lock:
+            eos_count += 1
+            print(f"[FilterAmount] 🔚 EOS recibido ({eos_count}/{NUM_FILTER_HOUR_WORKERS})")
+            
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_hour
+            if eos_count >= NUM_FILTER_HOUR_WORKERS:
+                print(f"[FilterAmount] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
+                eos_msg = serialize_message([], header)
+                output_exchanges = OUTPUT_EXCHANGES[source_exchange]
+                for exchange_name in output_exchanges:
+                    mq_outputs[exchange_name].send(eos_msg)
+                print("[FilterAmount] EOS reenviado a workers downstream")
         return
     
     # Procesamiento normal
-    total_in = len(rows)
-    stats["batches"] += 1
-    stats["processed"] += total_in
-    
     filtered = filter_by_amount(rows, THRESHOLD)
-    stats["filtered"] += len(filtered)
     
     if filtered:
         out_msg = serialize_message(filtered, header)
         output_exchanges = OUTPUT_EXCHANGES[source_exchange]
         for exchange_name in output_exchanges:
             mq_outputs[exchange_name].send(out_msg)
-    
-    # Log cada 1000 batches
-    if stats["batches"] % 1000 == 0:
-        print(f"[FilterAmount] {stats['batches']} batches | {stats['processed']} in | {stats['filtered']} out")
 
 if __name__ == "__main__":
+    print(f"[FilterAmount] Iniciando worker {WORKER_ID}...")
     shutdown_requested = False
     mq_connections = []
     
@@ -86,11 +103,11 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: múltiples exchanges
+    # Entrada: múltiples exchanges con routing keys específicas
     mq_connections = []
-    for exchange_name in INPUT_EXCHANGES:
-        mq_in = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, [INPUT_ROUTING_KEY])
-        mq_connections.append(mq_in)
+    for exchange_name, route_keys in INPUT_EXCHANGES.items():
+        mq_in = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
+        mq_connections.append((mq_in, exchange_name))
 
     # Salida: múltiples exchanges según el tipo de datos
     mq_outputs = {}
@@ -114,8 +131,8 @@ if __name__ == "__main__":
                 print(f"[FilterAmount] Error consumiendo {exchange_name}: {e}")
         
         threads = []
-        for i, mq_in in enumerate(mq_connections):
-            thread = threading.Thread(target=consume_exchange, args=(mq_in, INPUT_EXCHANGES[i]))
+        for mq_in, exchange_name in mq_connections:
+            thread = threading.Thread(target=consume_exchange, args=(mq_in, exchange_name))
             thread.daemon = True
             thread.start()
             threads.append(thread)

@@ -6,3 +6,4 @@ __pycache__/
 results/*
 !results/results_expected.csv/
 !results/results_expected.csv/**
+.env

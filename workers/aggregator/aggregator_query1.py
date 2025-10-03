@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -10,10 +11,13 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
+NUM_FILTER_AMOUNT_WORKERS = int(os.environ.get('NUM_FILTER_AMOUNT_WORKERS', '2'))
+
 INPUT_EXCHANGE = "transactions_amount"    # exchange del filtro por amount
 INPUT_ROUTING_KEY = "amount"              # routing key del filtro por amount
 OUTPUT_EXCHANGE = "results_query1"        # exchange de salida para resultados finales
 ROUTING_KEY = "query1_results"            # routing para resultados
+
 
 class AggregatorQuery1:
     def __init__(self):
@@ -90,18 +94,35 @@ if __name__ == "__main__":
     eos_received = threading.Event()
     shutdown_event = threading.Event()
     
+    # Control de EOS - necesitamos recibir de todos los workers de filter_amount
+    class EOSCounter:
+        def __init__(self):
+            self.count = 0
+            self.lock = threading.Lock()
+    
+    eos_counter = EOSCounter()
+    
     def enhanced_on_message(body):
         global results_sent
         header, rows = deserialize_message(body)
         
         # Verificar si es mensaje de End of Stream
         if header.get("is_eos") == "true":
-            # Prevenir procesamiento duplicado de EOS
-            if results_sent:
-                print("[AggregatorQuery1] ⚠️ EOS duplicado ignorado (resultados ya enviados)")
-                return
+            with eos_counter.lock:
+                eos_counter.count += 1
+                print(f"[AggregatorQuery1] 🔚 EOS recibido ({eos_counter.count}/{NUM_FILTER_AMOUNT_WORKERS})")
+                
+                # Solo procesar cuando recibimos de TODOS los workers
+                if eos_counter.count < NUM_FILTER_AMOUNT_WORKERS:
+                    print(f"[AggregatorQuery1] Esperando más EOS...")
+                    return
+                
+                # Prevenir procesamiento duplicado
+                if results_sent:
+                    print("[AggregatorQuery1] ⚠️ EOS duplicado ignorado (resultados ya enviados)")
+                    return
             
-            print("[AggregatorQuery1] 🔚 End of Stream recibido. Generando resultados finales...")
+            print("[AggregatorQuery1] ✅ EOS recibido de TODOS los workers. Generando resultados finales...")
             results_sent = True
             
             # Generar resultados finales

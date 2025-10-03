@@ -28,21 +28,42 @@ def main():
     """
     logger.info("Iniciando Gateway...")
  
+    NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
+    
     # Inicializar conexiones de salida al middleware por tipo de entidad
     mq_map = {}
     try:
-        # Queues simples
-        mq_map["transactions"] = MessageMiddlewareQueue(host=RABBITMQ_HOST, queue_name="transactions_raw")
-        mq_map["transaction_items"] = MessageMiddlewareQueue(host=RABBITMQ_HOST, queue_name="transaction_items_raw")
+        # Usamos routing keys worker_0, worker_1, ... worker_N-1 para round-robin
+        # y "eos" para broadcast de EOS a todos los workers
+        filter_year_route_keys = [f"worker_{i}" for i in range(NUM_FILTER_YEAR_WORKERS)] + ["eos"]
+        
+        mq_map["transactions"] = MessageMiddlewareExchange(
+            host=RABBITMQ_HOST,
+            exchange_name="transactions_raw",
+            route_keys=filter_year_route_keys
+        )
+        mq_map["transaction_items"] = MessageMiddlewareExchange(
+            host=RABBITMQ_HOST,
+            exchange_name="transaction_items_raw",
+            route_keys=filter_year_route_keys
+        )
+        
+        # Queues simples para otros tipos
         mq_map["users"] = MessageMiddlewareQueue(host=RABBITMQ_HOST, queue_name="users_raw")
         mq_map["menu_items"] = MessageMiddlewareQueue(host=RABBITMQ_HOST, queue_name="menu_items_raw")
         
-        # Exchange solo para stores
+        # Exchange para stores (Q3 y Q4)
         mq_map["stores"] = MessageMiddlewareExchange(
             host=RABBITMQ_HOST, 
             exchange_name="stores_raw",
             route_keys=["q3", "q4"]  # Q3 y Q4 consumen de este exchange
         )
+        
+        # Guardar configuración de escalado en mq_map para usar en server.py
+        mq_map["_config"] = {
+            "num_filter_year_workers": NUM_FILTER_YEAR_WORKERS
+        }
+        
     except Exception as e:
         logger.error(f"No se pudo inicializar colas/exchanges del middleware: {e}")
         return
