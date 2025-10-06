@@ -31,8 +31,9 @@ services:
     ports:
       - "9000:9000"
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -42,42 +43,129 @@ services:
       - ./results:/app/results
 
   # ==================== FILTERS ====================
-  filter_year:
+  # Filter Year Workers - Agregar/quitar workers según necesidad
+  # IMPORTANTE: NUM_FILTER_YEAR_WORKERS en .env debe coincidir con la cantidad de workers aquí
+  filter_year_0:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    container_name: coffee-filter-year-0
     command: ["python", "-m", "workers.filter.filter_year"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
+      WORKER_ID: 0
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
 
-  filter_hour:
+  filter_year_1:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    container_name: coffee-filter-year-1
+    command: ["python", "-m", "workers.filter.filter_year"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
+      WORKER_ID: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  filter_year_2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-filter-year-2
+    command: ["python", "-m", "workers.filter.filter_year"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
+      WORKER_ID: 2
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  # Para agregar más workers:
+  # 1. Copia uno de los bloques anteriores
+  # 2. Cambia el nombre a filter_year_3, filter_year_4, etc.
+  # 3. Cambia WORKER_ID: 3, 4, etc.
+  # 4. Actualiza NUM_FILTER_YEAR_WORKERS en .env
+
+  # Filter Hour Workers - Agregar/quitar workers según necesidad
+  filter_hour_0:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-filter-hour-0
     command: ["python", "-m", "workers.filter.filter_hour"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
+      WORKER_ID: 0
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
 
-  filter_amount:
+  filter_hour_1:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    container_name: coffee-filter-hour-1
+    command: ["python", "-m", "workers.filter.filter_hour"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
+      WORKER_ID: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  # Filter Amount Workers
+  filter_amount_0:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-filter-amount-0
     command: ["python", "-m", "workers.filter.filter_amount"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
+      WORKER_ID: 0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  filter_amount_1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-filter-amount-1
+    command: ["python", "-m", "workers.filter.filter_amount"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
+      WORKER_ID: 1
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -85,47 +173,110 @@ services:
       - coffee-network
 
   # ==================== GROUP BY ====================
-  group_by_query2:
+  # Group By Query2 Workers
+  group_by_query2_0:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    container_name: coffee-group-by-query2-0
     command: ["python", "-m", "workers.group_by.group_by_query2"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
+      WORKER_ID: 0
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
 
-  group_by_query3:
+  group_by_query2_1:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    command: ["python", "-m", "workers.group_by.group_by_query3"]
+    container_name: coffee-group-by-query2-1
+    command: ["python", "-m", "workers.group_by.group_by_query2"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
+      WORKER_ID: 1
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
 
-  group_by_query4:
+  # Group By Query3 Workers
+  group_by_query3_0:
     build:
-     context: .
-     dockerfile: Dockerfile.worker
-    command: ["python", "-m", "workers.group_by.group_by_query4"]
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-group-by-query3-0
+    command: ["python", "-m", "workers.group_by.group_by_query3"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
+      WORKER_ID: 0
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
-     - coffee-network
+      - coffee-network
+
+  group_by_query3_1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-group-by-query3-1
+    command: ["python", "-m", "workers.group_by.group_by_query3"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
+      WORKER_ID: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  # Group By Query4 Workers
+  group_by_query4_0:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-group-by-query4-0
+    command: ["python", "-m", "workers.group_by.group_by_query4"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
+      WORKER_ID: 0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
+
+  group_by_query4_1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-group-by-query4-1
+    command: ["python", "-m", "workers.group_by.group_by_query4"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
+      WORKER_ID: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
 
   # ==================== AGGREGATORS ====================
   aggregator_query1:
@@ -134,8 +285,9 @@ services:
       dockerfile: Dockerfile.worker
     command: ["python", "-m", "workers.aggregator.aggregator_query1"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_FILTER_AMOUNT_WORKERS: ${NUM_FILTER_AMOUNT_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -144,12 +296,13 @@ services:
 
   aggregator_query2:
     build:
-     context: .
-     dockerfile: Dockerfile.worker
+      context: .
+      dockerfile: Dockerfile.worker
     command: ["python", "-m", "workers.aggregator.aggregator_query2"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_GROUP_BY_QUERY2_WORKERS: ${NUM_GROUP_BY_QUERY2_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -162,8 +315,9 @@ services:
      dockerfile: Dockerfile.worker
     command: ["python", "-m", "workers.aggregator.aggregator_query3"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_GROUP_BY_QUERY3_WORKERS: ${NUM_GROUP_BY_QUERY3_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -176,8 +330,9 @@ services:
      dockerfile: Dockerfile.worker
     command: ["python", "-m", "workers.aggregator.aggregator_query4"]
     environment:
-      RABBITMQ_HOST: rabbitmq
-      PYTHONUNBUFFERED: 1
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      NUM_GROUP_BY_QUERY4_WORKERS: ${NUM_GROUP_BY_QUERY4_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy

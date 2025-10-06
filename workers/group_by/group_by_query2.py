@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 from collections import defaultdict
 from datetime import datetime
 
@@ -12,10 +13,27 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGE = "transaction_items_year"     # exchange del filtro por año (CORREGIDO: transaction_items)
-INPUT_ROUTING_KEY = "year"                    # routing key del filtro por año
-OUTPUT_EXCHANGE = "transactions_query2"       # exchange de salida para query 2
-ROUTING_KEY = "query2"                        # routing para topic
+NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
+
+# ID del worker (auto-detectado del hostname o env var)
+def get_worker_id():
+    worker_id_env = os.environ.get('WORKER_ID')
+    if worker_id_env is not None:
+        return int(worker_id_env)
+    
+    import socket, re
+    hostname = socket.gethostname()
+    match = re.search(r'[-_](\d+)$', hostname)
+    if match:
+        return int(match.group(1)) - 1
+    return 0
+
+WORKER_ID = get_worker_id()
+
+INPUT_EXCHANGE = "transaction_items_year_query2"  # exchange dedicado para query2
+INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
+OUTPUT_EXCHANGE = "transactions_query2"           # exchange de salida para query 2
+ROUTING_KEY = "query2"                            # routing para topic
 
 def parse_month(created_at: str) -> str:
     """Extrae el año-mes de created_at. Retorna formato 'YYYY-MM'."""
@@ -76,16 +94,26 @@ def group_by_month_and_item(rows):
     
     return metrics
 
+# Control de EOS - necesitamos recibir EOS de todos los workers de filter_year
+eos_count = 0
+eos_lock = threading.Lock()
+
 def on_message(body):
+    global eos_count
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[GroupByQuery2] End of Stream recibido. Reenviando...")
-        # Reenviar EOS a workers downstream
-        eos_msg = serialize_message([], header)
-        mq_out.send(eos_msg)
-        print("[GroupByQuery2] EOS reenviado a workers downstream")
+        with eos_lock:
+            eos_count += 1
+            print(f"[GroupByQuery2] EOS recibido ({eos_count}/{NUM_FILTER_YEAR_WORKERS})")
+            
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year
+            if eos_count >= NUM_FILTER_YEAR_WORKERS:
+                print(f"[GroupByQuery2] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
+                eos_msg = serialize_message([], header)
+                mq_out.send(eos_msg)
+                print("[GroupByQuery2] EOS reenviado a workers downstream")
         return
     
     # Procesamiento normal
@@ -148,6 +176,7 @@ def on_message(body):
         print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items} qty={total_quantity} subtotal={total_subtotal:.2f}")
 
 if __name__ == "__main__":
+    print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")
     shutdown_requested = False
     
     def signal_handler(signum, frame):
@@ -159,14 +188,15 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: suscripción al exchange del filtro por año (transaction_items)
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
+    # Entrada: suscripción al exchange del filtro por año con routing keys específicas
+    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
     
     # Salida: exchange para datos agregados de query 2
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
     
     print("[*] GroupByQuery2 worker esperando mensajes...")
     print(f"[*] Consumiendo de: {INPUT_EXCHANGE} (transaction_items filtrados por año)")
+    print(f"[*] Esperando EOS de {NUM_FILTER_YEAR_WORKERS} workers de filter_year")
     try:
         mq_in.start_consuming(on_message)
     except KeyboardInterrupt:

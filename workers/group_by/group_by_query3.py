@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 from collections import defaultdict
 from datetime import datetime
 
@@ -12,8 +13,25 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
+NUM_FILTER_HOUR_WORKERS = int(os.environ.get('NUM_FILTER_HOUR_WORKERS', '2'))
+
+# ID del worker (auto-detectado del hostname o env var)
+def get_worker_id():
+    worker_id_env = os.environ.get('WORKER_ID')
+    if worker_id_env is not None:
+        return int(worker_id_env)
+    
+    import socket, re
+    hostname = socket.gethostname()
+    match = re.search(r'[-_](\d+)$', hostname)
+    if match:
+        return int(match.group(1)) - 1
+    return 0
+
+WORKER_ID = get_worker_id()
+
 INPUT_EXCHANGE = "transactions_hour"     # exchange del filtro por hora
-INPUT_ROUTING_KEY = "hour"               # routing key del filtro por hora
+INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
 OUTPUT_EXCHANGE = "transactions_query3"  # exchange de salida para query 3
 ROUTING_KEY = "query3"                   # routing para topic
 
@@ -80,16 +98,26 @@ def group_by_semester_and_store(rows):
     
     return metrics
 
+# Control de EOS - necesitamos recibir EOS de todos los workers de filter_hour
+eos_count = 0
+eos_lock = threading.Lock()
+
 def on_message(body):
+    global eos_count
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[GroupByQuery3] End of Stream recibido. Reenviando...")
-        # Reenviar EOS a workers downstream
-        eos_msg = serialize_message([], header)
-        mq_out.send(eos_msg)
-        print("[GroupByQuery3] EOS reenviado a workers downstream")
+        with eos_lock:
+            eos_count += 1
+            print(f"[GroupByQuery3] EOS recibido ({eos_count}/{NUM_FILTER_HOUR_WORKERS})")
+            
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_hour
+            if eos_count >= NUM_FILTER_HOUR_WORKERS:
+                print(f"[GroupByQuery3] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
+                eos_msg = serialize_message([], header)
+                mq_out.send(eos_msg)
+                print("[GroupByQuery3] EOS reenviado a workers downstream")
         return
     
     # Procesamiento normal
@@ -143,25 +171,25 @@ def on_message(body):
     
     unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
     unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
-    
     # Log más compacto
     if batches_sent > 0:
         print(f"[GroupByQuery3] in={total_in} created={len(semester_store_metrics)} sent={batches_sent}_batches semesters={unique_semesters} stores={unique_stores} tpv={total_tpv:.2f}")
 
 if __name__ == "__main__":
+    import threading
+    print(f"[GroupByQuery3] Iniciando worker {WORKER_ID}...")
     shutdown_requested = False
     
     def signal_handler(signum, frame):
         global shutdown_requested
         print(f"[GroupByQuery3] Señal {signum} recibida, cerrando...")
-        shutdown_requested = True
         mq_in.stop_consuming()
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: suscripción al exchange del filtro por hora
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
+    # Entrada: suscripción al exchange del filtro por hora con routing keys específicas
+    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
     
     # Salida: exchange para datos agregados de query 3
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])

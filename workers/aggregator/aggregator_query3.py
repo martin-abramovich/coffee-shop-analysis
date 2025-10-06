@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 from collections import defaultdict
 
 # Añadir paths al PYTHONPATH
@@ -11,12 +12,20 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGE = "transactions_query3"    # exchange del group_by_query3
-INPUT_ROUTING_KEY = "query3"              # routing key del group_by_query3
-STORES_EXCHANGE = "stores_raw"            # exchange de stores para JOIN
-STORES_ROUTING_KEY = "q3"                 # routing key para query 3
+NUM_GROUP_BY_QUERY3_WORKERS = int(os.environ.get('NUM_GROUP_BY_QUERY3_WORKERS', '2'))
+
+INPUT_EXCHANGE = "transactions_query3"    # exchange del group_by query 3
+INPUT_ROUTING_KEY = "query3"              # routing key del group_by
 OUTPUT_EXCHANGE = "results_query3"        # exchange de salida para resultados finales
 ROUTING_KEY = "query3_results"            # routing para resultados
+
+# Control de EOS
+eos_count = 0
+eos_lock = threading.Lock()
+
+# Exchanges adicionales para JOIN
+STORES_EXCHANGE = "stores_raw"
+STORES_ROUTING_KEY = "q3"
 
 class AggregatorQuery3:
     def __init__(self):
@@ -149,12 +158,22 @@ def on_tpv_message(body):
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[AggregatorQuery3] EOS recibido en TPV. Marcando como listo para generar resultados...")
-        aggregator.eos_received = True
-        
-        # Si ya tenemos stores cargadas y no hemos enviado, generar resultados
-        if aggregator.stores_loaded and not aggregator.results_sent:
-            generate_and_send_results()
+        with eos_lock:
+            global eos_count
+            eos_count += 1
+            print(f"[AggregatorQuery3] EOS recibido en TPV ({eos_count}/{NUM_GROUP_BY_QUERY3_WORKERS})")
+            
+            # Solo procesar cuando recibimos de TODOS los workers
+            if eos_count < NUM_GROUP_BY_QUERY3_WORKERS:
+                print(f"[AggregatorQuery3] Esperando más EOS...")
+                return
+            
+            print("[AggregatorQuery3] ✅ EOS recibido de TODOS los workers. Marcando como listo...")
+            aggregator.eos_received = True
+            
+            # Si ya tenemos stores cargadas y no hemos enviado, generar resultados
+            if aggregator.stores_loaded and not aggregator.results_sent:
+                generate_and_send_results()
         return
     
     # Procesamiento normal: acumular TPV parciales

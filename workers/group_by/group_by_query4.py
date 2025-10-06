@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 from collections import defaultdict
 
 # Añadir paths al PYTHONPATH
@@ -11,10 +12,27 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGE = "transactions_year"     # exchange del filtro por año
-INPUT_ROUTING_KEY = "year"               # routing key del filtro por año
-OUTPUT_EXCHANGE = "transactions_query4"  # exchange de salida para query 4
-ROUTING_KEY = "query4"                   # routing para topic
+NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
+
+# ID del worker (auto-detectado del hostname o env var)
+def get_worker_id():
+    worker_id_env = os.environ.get('WORKER_ID')
+    if worker_id_env is not None:
+        return int(worker_id_env)
+    
+    import socket, re
+    hostname = socket.gethostname()
+    match = re.search(r'[-_](\d+)$', hostname)
+    if match:
+        return int(match.group(1)) - 1
+    return 0
+
+WORKER_ID = get_worker_id()
+
+INPUT_EXCHANGE = "transactions_year_query4"  # exchange dedicado para query4
+INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
+OUTPUT_EXCHANGE = "transactions_query4"      # exchange de salida para query 4
+ROUTING_KEY = "query4"                       # routing para topic
 
 def group_by_store_and_user(rows):
     """Agrupa por (store_id, user_id) y cuenta transacciones para Query 4."""
@@ -46,17 +64,26 @@ def group_by_store_and_user(rows):
     
     return metrics
 
+# Control de EOS - necesitamos recibir EOS de todos los workers de filter_year
+eos_count = 0
+eos_lock = threading.Lock()
+
 def on_message(body):
+    global eos_count
     header, rows = deserialize_message(body)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        # Log compacto al recibir EOS
-        print("[GroupByQuery4] EOS recibido, reenviando aguas abajo")
-        # Reenviar EOS a workers downstream
-        eos_msg = serialize_message([], header)
-        mq_out.send(eos_msg)
-        print("[GroupByQuery4] EOS reenviado a workers downstream")
+        with eos_lock:
+            eos_count += 1
+            print(f"[GroupByQuery4] EOS recibido ({eos_count}/{NUM_FILTER_YEAR_WORKERS})")
+            
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year
+            if eos_count >= NUM_FILTER_YEAR_WORKERS:
+                print(f"[GroupByQuery4] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
+                eos_msg = serialize_message([], header)
+                mq_out.send(eos_msg)
+                print("[GroupByQuery4] EOS reenviado a workers downstream")
         return
     
     # Procesamiento normal
@@ -114,6 +141,7 @@ def on_message(body):
     print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent={batches_sent}_batches stores={unique_stores} users={unique_users} tx_total={total_transactions}")
 
 if __name__ == "__main__":
+    print(f"[GroupByQuery4] Iniciando worker {WORKER_ID}...")
     shutdown_requested = False
     
     def signal_handler(signum, frame):
@@ -125,13 +153,14 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: suscripción al exchange del filtro por año
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
+    # Entrada: suscripción al exchange del filtro por año con routing keys específicas
+    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
     
     # Salida: exchange para datos agregados de query 4
     mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
     
     print("[*] GroupByQuery4 worker esperando mensajes...")
+    print(f"[*] Esperando EOS de {NUM_FILTER_YEAR_WORKERS} workers de filter_year")
     try:
         mq_in.start_consuming(on_message)
     except KeyboardInterrupt:

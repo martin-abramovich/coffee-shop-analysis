@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import threading
 from collections import defaultdict
 
 # Añadir paths al PYTHONPATH
@@ -11,11 +12,17 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-INPUT_EXCHANGE = "transactions_query2"    # exchange del group_by_query2
-INPUT_ROUTING_KEY = "query2"              # routing key del group_by_query2
-MENU_ITEMS_QUEUE = "menu_items_raw"       # cola de menu_items para JOIN
+NUM_GROUP_BY_QUERY2_WORKERS = int(os.environ.get('NUM_GROUP_BY_QUERY2_WORKERS', '2'))
+
+INPUT_EXCHANGE = "transactions_query2"    # exchange del group_by query 2
+INPUT_ROUTING_KEY = "query2"              # routing key del group_by
 OUTPUT_EXCHANGE = "results_query2"        # exchange de salida para resultados finales
 ROUTING_KEY = "query2_results"            # routing para resultados
+
+# Exchanges adicionales para JOIN
+MENU_ITEMS_EXCHANGE = "menu_items_raw"
+MENU_ITEMS_ROUTING_KEY = "menu_items"
+MENU_ITEMS_QUEUE = "menu_items_raw"
 
 class AggregatorQuery2:
     def __init__(self):
@@ -190,8 +197,13 @@ aggregator = AggregatorQuery2()
 # Variable global para control de shutdown
 shutdown_event = None
 
+# Control de EOS de múltiples workers
+eos_count = 0
+eos_lock = threading.Lock()
+
 def on_metrics_message(body):
     """Maneja mensajes de métricas de group_by_query2."""
+    global eos_count
     # Si ya enviamos resultados, ignorar mensajes adicionales
     if aggregator.results_sent:
         return
@@ -204,14 +216,23 @@ def on_metrics_message(body):
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        if not aggregator.eos_metrics_done:
-            print("[AggregatorQuery2] EOS recibido en métricas. Marcando como listo para generar resultados...")
-            aggregator.eos_received = True
-            aggregator.eos_metrics_done = True
+        with eos_lock:
+            eos_count += 1
+            print(f"[AggregatorQuery2] EOS recibido ({eos_count}/{NUM_GROUP_BY_QUERY2_WORKERS})")
             
-            # Si ya tenemos menu_items cargados y aún no enviamos, generar resultados una sola vez
-            if aggregator.menu_items_loaded and not aggregator.results_sent:
-                generate_and_send_results()
+            # Solo procesar cuando recibimos de TODOS los workers
+            if eos_count < NUM_GROUP_BY_QUERY2_WORKERS:
+                print(f"[AggregatorQuery2] Esperando más EOS...")
+                return
+            
+            if not aggregator.eos_metrics_done:
+                print("[AggregatorQuery2] ✅ EOS recibido de TODOS los workers. Marcando como listo...")
+                aggregator.eos_received = True
+                aggregator.eos_metrics_done = True
+                
+                # Si ya tenemos menu_items cargados y aún no enviamos, generar resultados una sola vez
+                if aggregator.menu_items_loaded and not aggregator.results_sent:
+                    generate_and_send_results()
         return
     
     # Procesamiento normal: acumular métricas parciales
