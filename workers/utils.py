@@ -1,8 +1,10 @@
+
 def deserialize_message(body: bytes):
     """Convierte el mensaje de texto en (header_dict, rows: list[dict]).
     Formato esperado:
-      header: "type=data;stream_id=...;batch_id=...;is_batch_end=...;is_eos=...;"
+      header: "type=data;stream_id=...;batch_id=...;is_batch_end=...;is_eos=...;session_id=...;"
       payload: "k=v,k2=v2|k=v,...;"
+    
     """
     try:
         text = body.decode("utf-8").strip()
@@ -28,6 +30,7 @@ def deserialize_message(body: bytes):
                 k, v = tok.split('=', 1)
                 header[k] = v
 
+
         rows = []
         if payload_str:
             for row in payload_str.split('|'):
@@ -52,12 +55,12 @@ def serialize_message(rows, header_dict):
     """Serializa filas de vuelta a string manteniendo el header del gateway."""
     header_parts = []
     # Primero los campos estándar en orden
-    for k in ["type", "stream_id", "batch_id", "is_batch_end", "is_eos"]:
+    for k in ["type", "stream_id", "batch_id", "is_batch_end", "is_eos", "session_id"]:
         if k in header_dict:
             header_parts.append(f"{k}={header_dict[k]}")
     # Luego agregar cualquier campo adicional del header
     for k, v in header_dict.items():
-        if k not in ["type", "stream_id", "batch_id", "is_batch_end", "is_eos"]:
+        if k not in ["type", "stream_id", "batch_id", "is_batch_end", "is_eos", "session_id"]:
             header_parts.append(f"{k}={v}")
     header = ';'.join(header_parts) + ';'
 

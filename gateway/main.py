@@ -2,11 +2,14 @@ import socket
 import logging
 import sys
 import os
+import threading
+import signal
+import time
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from gateway.server import handle_client
+from gateway.server import handle_client, active_sessions, sessions_lock
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from gateway.results_handler import start_results_handler
 
@@ -21,10 +24,34 @@ LISTEN_HOST = "0.0.0.0"  # Para escuchar conexiones TCP
 PORT = 9000  # Puerto para recibir del cliente
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')  # Hostname de RabbitMQ
 
+# Control de shutdown global
+shutdown_event = threading.Event()
+active_threads = []
+threads_lock = threading.Lock()
+
+def signal_handler(signum, frame):
+    """Maneja señales para graceful shutdown"""
+    logger.info(f"Señal {signum} recibida. Iniciando cierre ordenado...")
+    shutdown_event.set()
+
+
+def handle_client_wrapper(conn, addr, mq_map):
+    """Wrapper para manejar cliente con manejo de errores"""
+    try:
+        handle_client(conn, addr, mq_map)
+    except Exception as e:
+        logger.error(f"Error no manejado en cliente {addr}: {e}")
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
+        logger.info(f"Thread para cliente {addr} terminado")
+
 def main():
     """
     Función principal del gateway.
-    Escucha conexiones TCP del cliente y procesa los datos recibidos.
+    Escucha conexiones TCP de múltiples clientes y procesa los datos recibidos concurrentemente.
     """
     logger.info("Iniciando Gateway...")
  
@@ -80,28 +107,73 @@ def main():
             logger.info(f"[GATEWAY] Escuchando en {LISTEN_HOST}:{PORT}")
             logger.info("[GATEWAY] Listo para recibir datos del cliente")
 
-            while True:
+            # Configurar manejadores de señales
+            signal.signal(signal.SIGTERM, signal_handler)
+            signal.signal(signal.SIGINT, signal_handler)
+            
+            logger.info("Gateway listo para múltiples clientes concurrentes")
+            
+            while not shutdown_event.is_set():
                 try:
-                    conn, addr = s.accept()
-                    logger.info(f"[GATEWAY] Nueva conexión desde {addr}")
-                    handle_client(conn, addr, mq_map)
+                    # Usar timeout para poder verificar shutdown_event
+                    s.settimeout(1.0)
+                    try:
+                        conn, addr = s.accept()
+                        logger.info(f"[GATEWAY] Nueva conexión desde {addr}")
+                        
+                        # Crear thread para manejar cliente
+                        client_thread = threading.Thread(
+                            target=handle_client_wrapper,
+                            args=(conn, addr, mq_map),
+                            name=f"Client-{addr[0]}:{addr[1]}"
+                        )
+                        client_thread.daemon = True
+                        client_thread.start()
+                        
+                        # Registrar thread activo
+                        with threads_lock:
+                            active_threads.append(client_thread)
+                        
+                        logger.info(f"Thread creado para cliente {addr}")
+                        
+                    except socket.timeout:
+                        # Timeout normal, continuar
+                        continue
+                        
                 except KeyboardInterrupt:
                     logger.info("Interrupción recibida, cerrando servidor...")
+                    shutdown_event.set()
                     break
                 except Exception as e:
-                    logger.error(f"Error manejando conexión: {e}")
+                    if not shutdown_event.is_set():
+                        logger.error(f"Error aceptando conexión: {e}")
                     continue
+            
+            # Esperar a que terminen todos los threads de clientes
+            logger.info("Esperando que terminen todos los clientes...")
+            with threads_lock:
+                for thread in active_threads:
+                    if thread.is_alive():
+                        logger.info(f"Esperando thread {thread.name}...")
+                        thread.join(timeout=10)
+            
+            logger.info("Todos los clientes han terminado")
                     
     except Exception as e:
         logger.error(f"Error en servidor: {e}")
+        shutdown_event.set()
     finally:
         # Cerrar todas las conexiones de colas
+        logger.info("Cerrando conexiones de middleware...")
         for _k, _mq in mq_map.items():
-            try:
-                _mq.close()
-            except Exception:
-                pass
-        logger.info("Gateway cerrado")
+            if _k != "_config":  # Saltar entrada de configuración
+                try:
+                    _mq.close()
+                    logger.debug(f"Conexión {_k} cerrada")
+                except Exception as e:
+                    logger.error(f"Error cerrando conexión {_k}: {e}")
+        
+        logger.info("Gateway cerrado completamente")
 
 if __name__ == "__main__":
     main()

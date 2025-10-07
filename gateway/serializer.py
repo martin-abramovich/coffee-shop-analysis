@@ -8,7 +8,7 @@ def serialize_entity(entity) -> str:
     return ",".join(kv)
 
 def serialize_message(rows, stream_id="default", batch_id="b001",
-                      is_batch_end=False, is_eos=False) -> bytes:
+                      is_batch_end=False, is_eos=False, session_id=None) -> bytes:
     """
     Serializa un batch completo a texto plano con header + payload
     """
@@ -23,6 +23,11 @@ def serialize_message(rows, stream_id="default", batch_id="b001",
         f"is_batch_end={is_batch_end_str}",
         f"is_eos={is_eos_str}"
     ]
+    
+    # Agregar session_id si se proporciona
+    if session_id:
+        header_parts.append(f"session_id={session_id}")
+    
     header = ";".join(header_parts) + ";"
 
     payload_rows = []

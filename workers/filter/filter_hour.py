@@ -2,6 +2,7 @@ import sys
 import os
 import signal
 import threading
+import time
 from datetime import datetime
 
 # Añadir paths al PYTHONPATH
@@ -114,35 +115,41 @@ def filter_by_hour(rows):
             continue
     return filtered
 
-# Control de EOS - necesitamos recibir EOS de cada worker de filter_year por cada exchange
-eos_count_per_exchange = {}
+# Control de EOS por sesión - necesitamos recibir EOS de cada worker de filter_year por cada exchange para cada sesión
+eos_count_per_session = {}  # {session_id: {exchange: count}}
 eos_lock = threading.Lock()
 
 def on_message(body, source_exchange):
     header, rows = deserialize_message(body)
+    session_id = header.get("session_id", "unknown")
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         with eos_lock:
-            # Incrementar contador de EOS para este exchange
-            if source_exchange not in eos_count_per_exchange:
-                eos_count_per_exchange[source_exchange] = 0
-            eos_count_per_exchange[source_exchange] += 1
+            # Inicializar contadores por sesión si no existen
+            if session_id not in eos_count_per_session:
+                eos_count_per_session[session_id] = {}
             
-            total_eos = sum(eos_count_per_exchange.values())
+            # Incrementar contador de EOS para este exchange y sesión
+            if source_exchange not in eos_count_per_session[session_id]:
+                eos_count_per_session[session_id][source_exchange] = 0
+            eos_count_per_session[session_id][source_exchange] += 1
+            
+            session_eos = eos_count_per_session[session_id][source_exchange]
+            total_eos = sum(eos_count_per_session[session_id].values())
             expected_eos = NUM_FILTER_YEAR_WORKERS * len(INPUT_EXCHANGES)
             
-            print(f"[FilterHour] 🔚 EOS recibido desde {source_exchange} ({eos_count_per_exchange[source_exchange]}/{NUM_FILTER_YEAR_WORKERS})")
-            print(f"[FilterHour] Total EOS: {total_eos}/{expected_eos}")
+            print(f"[FilterHour] 🔚 EOS recibido desde {source_exchange} (sesión {session_id}) ({session_eos}/{NUM_FILTER_YEAR_WORKERS})")
+            print(f"[FilterHour] Total EOS para sesión {session_id}: {total_eos}/{expected_eos}")
             
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de TODOS los exchanges
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de TODOS los exchanges para esta sesión
             all_complete = all(
-                eos_count_per_exchange.get(ex, 0) >= NUM_FILTER_YEAR_WORKERS 
+                eos_count_per_session[session_id].get(ex, 0) >= NUM_FILTER_YEAR_WORKERS 
                 for ex in INPUT_EXCHANGES.keys()
             )
             
             if all_complete:
-                print(f"[FilterHour Worker {WORKER_ID}] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
+                print(f"[FilterHour Worker {WORKER_ID}] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
                 # Reenviar EOS a TODOS los outputs (broadcast)
                 eos_msg = serialize_message([], header)
                 
@@ -152,7 +159,18 @@ def on_message(body, source_exchange):
                         mq_outputs_scalable[exchange_name].send_eos(eos_msg)
                         print(f"[FilterHour Worker {WORKER_ID}] EOS broadcast a {exchange_name}")
                 
-                shutdown_event.set()
+                # Programar limpieza de la sesión después de un delay
+                def delayed_cleanup():
+                    time.sleep(10)  # Esperar 10 segundos antes de limpiar
+                    with eos_lock:
+                        if session_id in eos_count_per_session:
+                            del eos_count_per_session[session_id]
+                            print(f"[FilterHour Worker {WORKER_ID}] Sesión {session_id} limpiada")
+                
+                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+                cleanup_thread.start()
+                
+                # NO terminar el worker - continúa esperando más sesiones
         return
     
     # Procesamiento normal
@@ -221,8 +239,16 @@ if __name__ == "__main__":
             thread.start()
             threads.append(thread)
         
-        # Esperar shutdown event
-        shutdown_event.wait()
+        # Esperar indefinidamente - el worker NO termina después de EOS
+        # Solo termina por señal externa (SIGTERM, SIGINT)
+        print(f"[FilterHour Worker {WORKER_ID}] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print(f"[FilterHour Worker {WORKER_ID}] 💡 El worker continuará procesando múltiples clientes")
+        
+        # Loop principal - solo termina por señal
+        while not shutdown_event.is_set():
+            time.sleep(1)
+        
+        print(f"[FilterHour Worker {WORKER_ID}] ✅ Terminando por señal externa")
             
     except KeyboardInterrupt:
         print("\n[FilterHour] Interrupción recibida")

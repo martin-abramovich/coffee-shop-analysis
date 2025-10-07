@@ -2,6 +2,9 @@ import socket
 import struct
 import sys
 import os
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 
 # Añadir paths al PYTHONPATH
@@ -240,12 +243,73 @@ def parse_item(data, offset, entity_type):
     
     return item, offset
 
+def send_eos_to_worker_simple(session_id, entity_type, mq_map, scalable_exchanges):
+    """
+    Envía EOS a un worker específico tan pronto como termina de procesar ese tipo de entidad.
+    """
+    # Preparar mensaje EOS con ID de sesión
+    eos_msg = serialize_message(
+        [], 
+        stream_id=f"session_{session_id}",
+        batch_id=f"s{session_id}_EOS_{entity_type}", 
+        is_batch_end=True,
+        is_eos=True,
+        session_id=session_id
+    )
+    
+    try:
+        # Usar wrapper escalable si existe para hacer broadcast de EOS
+        if entity_type in scalable_exchanges:
+            scalable_exchanges[entity_type].send(eos_msg, is_eos=True)
+            print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a workers de {entity_type}")
+        else:
+            mq_map[entity_type].send(eos_msg)
+            print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a {entity_type}")
+    except Exception as e:
+        print(f"[GATEWAY] Sesión {session_id}: ❌ Error enviando EOS a {entity_type}: {e}")
+
+
+# Control global de sesiones activas
+active_sessions = {}
+sessions_lock = threading.Lock()
+
+class ClientSession:
+    """Representa una sesión de cliente con su propio contexto"""
+    def __init__(self, session_id, addr):
+        self.session_id = session_id
+        self.addr = addr
+        self.start_time = time.time()
+        self.batch_count = 0
+        self.total_processed = 0
+        self.is_active = True
+        
+    def get_stats(self):
+        duration = time.time() - self.start_time
+        return {
+            'session_id': self.session_id,
+            'addr': str(self.addr),
+            'duration': duration,
+            'batch_count': self.batch_count,
+            'total_processed': self.total_processed,
+            'is_active': self.is_active
+        }
+
 def handle_client(conn, addr, mq_map):
-    print(f"[GATEWAY] Conexión de {addr}")
+    # Generar ID único para esta sesión
+    session_id = str(uuid.uuid4())[:8]
+    session = ClientSession(session_id, addr)
+    
+    # Registrar sesión activa
+    with sessions_lock:
+        active_sessions[session_id] = session
+    
+    
+    
+    print(f"[GATEWAY] Nueva sesión {session_id} desde {addr}")
+    print(f"[GATEWAY] Sesiones activas: {len(active_sessions)}")
+    
     buffer = b""
     batch_id = 0
-    total_processed = 0
-    batch_count = 0
     
     # Extraer configuración de escalado
     config = mq_map.get("_config", {})
@@ -258,6 +322,7 @@ def handle_client(conn, addr, mq_map):
             mq_map["transactions"], 
             num_filter_year_workers
         )
+        
     if "transaction_items" in mq_map and hasattr(mq_map["transaction_items"], "exchange_name"):
         scalable_exchanges["transaction_items"] = ScalableExchangeWrapper(
             mq_map["transaction_items"], 
@@ -283,23 +348,24 @@ def handle_client(conn, addr, mq_map):
                     
                     # Procesar el batch
                     batch_id += 1
-                    batch_count += 1
+                    session.batch_count += 1
                     processed_items = process_batch_by_type(items, entity_type)
                     
                     if processed_items:
-                        total_processed += len(processed_items)
+                        session.total_processed += len(processed_items)
                         # Solo imprimir cada 1000 batches para reducir logs
                         if batch_id % 1000 == 0:
-                            print(f"[GATEWAY] Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
-                            print(f"[GATEWAY] Total procesado hasta ahora: {total_processed} registros")
+                            print(f"[GATEWAY] Sesión {session_id}: Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
+                            print(f"[GATEWAY] Sesión {session_id}: Total procesado hasta ahora: {session.total_processed} registros")
 
-                        # Serializar y enviar al middleware
+                        # Serializar y enviar al middleware con ID de sesión
                         msg = serialize_message(
                             processed_items,
-                            stream_id="default",
-                            batch_id=f"b{batch_id:04d}",
+                            stream_id=f"session_{session_id}",
+                            batch_id=f"s{session_id}_b{batch_id:04d}",
                             is_batch_end=True,
-                            is_eos=False
+                            is_eos=False,
+                            session_id=session_id
                         )
                         
                         # Usar wrapper escalable si existe, sino usar mq_map directamente
@@ -308,7 +374,7 @@ def handle_client(conn, addr, mq_map):
                             try:
                                 scalable_exchanges[entity_type].send(msg, is_eos=False)
                             except Exception as e:
-                                print(f"[GATEWAY] Error enviando al middleware ({entity_type}): {e}")
+                                print(f"[GATEWAY] Sesión {session_id}: Error enviando al middleware ({entity_type}): {e}")
                         else:
                             # Envío normal para colas/exchanges no escalables
                             target_mq = mq_map.get(entity_type)
@@ -360,70 +426,22 @@ def handle_client(conn, addr, mq_map):
                     break
 
     except Exception as e:
-        print(f"[GATEWAY] Error en conexión con {addr}: {e}")
+        print(f"[GATEWAY] Sesión {session_id}: Error en conexión con {addr}: {e}")
     finally:
-        # Enviar EOS (End of Stream) a todas las colas cuando termina el cliente
-        print(f"[GATEWAY] Enviando End of Stream a todas las colas...")
+        # Marcar sesión como inactiva
+        session.is_active = False
         
-        # Preparar mensaje EOS una sola vez
-        eos_msg = serialize_message(
-            [], 
-            stream_id="default",
-            batch_id="EOS", 
-            is_batch_end=True,
-            is_eos=True
-        )
+        print(f"[GATEWAY] Sesión {session_id}: Enviando EOS a workers...")
         
-        for entity_type, mq in mq_map.items():
-            # Saltar la entrada de configuración
-            if entity_type == "_config":
-                continue
-                
-            try:
-                # Usar wrapper escalable si existe para hacer broadcast de EOS
-                if entity_type in scalable_exchanges:
-                    scalable_exchanges[entity_type].send(eos_msg, is_eos=True)
-                    print(f"[GATEWAY] ✅ EOS broadcast a todos los workers de {entity_type}")
-                else:
-                    mq.send(eos_msg)
-                    print(f"[GATEWAY] ✅ EOS enviado a {entity_type}")
-            except Exception as e:
-                print(f"[GATEWAY] ❌ Error enviando EOS a {entity_type}: {e}")
-                # Intentar reconectar y reenviar
-                print(f"[GATEWAY] Intentando reconectar {entity_type} para enviar EOS...")
-                try:
-                    from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
-                    # Cerrar la conexión vieja
-                    try:
-                        mq.close()
-                    except:
-                        pass
-                    
-                    # Recrear la conexión
-                    if entity_type == "stores":
-                        mq_map[entity_type] = MessageMiddlewareExchange(
-                            host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
-                            exchange_name="stores_raw",
-                            route_keys=["q3", "q4"]
-                        )
-                    else:
-                        mq_map[entity_type] = MessageMiddlewareQueue(
-                            host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
-                            queue_name=f"{entity_type}_raw"
-                        )
-                    
-                    # Reintentar envío de EOS
-                    mq_map[entity_type].send(eos_msg)
-                    print(f"[GATEWAY] ✅ EOS reenviado exitosamente a {entity_type}")
-                except Exception as retry_e:
-                    print(f"[GATEWAY] ❌ CRÍTICO: No se pudo enviar EOS a {entity_type}: {retry_e}")
-                    print(f"[GATEWAY] ⚠️ Los aggregators de {entity_type} no recibirán EOS y quedarán esperando")
+        # Enviar EOS a cada tipo de worker que procesamos
+        for entity_type in ["transactions", "transaction_items", "users", "stores", "menu_items"]:
+            if entity_type in mq_map and entity_type != "_config":
+                send_eos_to_worker_simple(session_id, entity_type, mq_map, scalable_exchanges)
         
-        print(f"[GATEWAY] ✅ Todos los EOS enviados")
         
         # Enviar ACK final al cliente (4 bytes longitud + payload UTF-8)
         try:
-            summary = f"OK batches={batch_count} total_records={total_processed}"
+            summary = f"OK session={session_id} batches={session.batch_count} total_records={session.total_processed}"
             payload = summary.encode('utf-8')
             header = len(payload).to_bytes(4, byteorder='big')
             conn.sendall(header + payload)
@@ -432,4 +450,11 @@ def handle_client(conn, addr, mq_map):
         try:
             conn.close()
         finally:
-            print(f"[GATEWAY] Conexión con {addr} cerrada. Total procesado: {total_processed} registros en {batch_count} batches")
+            # Remover sesión de las activas
+            with sessions_lock:
+                if session_id in active_sessions:
+                    del active_sessions[session_id]
+            
+            duration = time.time() - session.start_time
+            print(f"[GATEWAY] Sesión {session_id} cerrada. Duración: {duration:.2f}s, Total procesado: {session.total_processed} registros en {session.batch_count} batches")
+            print(f"[GATEWAY] Sesiones activas restantes: {len(active_sessions)}")
