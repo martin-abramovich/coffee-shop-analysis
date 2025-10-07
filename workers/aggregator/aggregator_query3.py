@@ -2,6 +2,7 @@ import sys
 import os
 import signal
 import threading
+import time
 from collections import defaultdict
 
 # Añadir paths al PYTHONPATH
@@ -20,7 +21,7 @@ OUTPUT_EXCHANGE = "results_query3"        # exchange de salida para resultados f
 ROUTING_KEY = "query3_results"            # routing para resultados
 
 # Control de EOS
-eos_count = 0
+eos_count = {}  # {session_id: count}
 eos_lock = threading.Lock()
 
 # Exchanges adicionales para JOIN
@@ -29,18 +30,31 @@ STORES_ROUTING_KEY = "q3"
 
 class AggregatorQuery3:
     def __init__(self):
-        # Acumulador de TPV por (semestre, store_id)
-        # Estructura: {(semester, store_id): total_payment_value}
-        self.semester_store_tpv = defaultdict(float)
+        # Datos por sesión: {session_id: session_data}
+        self.session_data = {}
         
-        # Diccionario para JOIN: store_id -> store_name
+        # Diccionario global para JOIN: store_id -> store_name (compartido entre sesiones)
         self.store_id_to_name = {}
         
-        # Control de flujo
-        self.batches_received = 0
+        # Control de flujo global
         self.stores_loaded = False
-        self.eos_received = False
-        self.results_sent = False  # ← AGREGADO: Flag para evitar procesamiento duplicado
+        self.eos_stores_done = False
+    
+    def initialize_session(self, session_id):
+        """Inicializa datos para una nueva sesión"""
+        if session_id not in self.session_data:
+            self.session_data[session_id] = {
+                'semester_store_tpv': defaultdict(float),
+                'batches_received': 0,
+                'eos_received': False,
+                'results_sent': False,
+                'eos_tpv_done': False
+            }
+    
+    def get_session_data(self, session_id):
+        """Obtiene los datos de una sesión específica"""
+        self.initialize_session(session_id)
+        return self.session_data[session_id]
         
     def load_stores(self, rows):
         """Carga stores para construir el diccionario store_id -> store_name."""
@@ -53,8 +67,10 @@ class AggregatorQuery3:
         
         print(f"[AggregatorQuery3] Cargadas {len(self.store_id_to_name)} stores para JOIN")
     
-    def accumulate_tpv(self, rows):
-        """Acumula TPV parciales de group_by_query3."""
+    def accumulate_tpv(self, rows, session_id):
+        """Acumula TPV parciales de group_by_query3 para una sesión específica."""
+        session_data = self.get_session_data(session_id)
+        
         for row in rows:
             semester = row.get('semester')
             store_id = row.get('store_id')
@@ -74,22 +90,24 @@ class AggregatorQuery3:
             # Clave compuesta: (semestre, store_id)
             key = (semester, store_id)
             
-            # Acumular TPV
-            self.semester_store_tpv[key] += total_payment_value
+            # Acumular TPV para esta sesión
+            session_data['semester_store_tpv'][key] += total_payment_value
         
-        self.batches_received += 1
+        session_data['batches_received'] += 1
         # Log solo cada 10 batches para no saturar
-        if self.batches_received % 10 == 0 or self.batches_received == 1:
-            print(f"[AggregatorQuery3] Procesado batch {self.batches_received} con {len(rows)} registros. Total combinaciones: {len(self.semester_store_tpv)}")
+        if session_data['batches_received'] % 10 == 0 or session_data['batches_received'] == 1:
+            print(f"[AggregatorQuery3] Sesión {session_id}: Procesado batch {session_data['batches_received']} con {len(rows)} registros. Total combinaciones: {len(session_data['semester_store_tpv'])}")
     
-    def generate_final_results(self):
-        """Genera los resultados finales para Query 3 con JOIN."""
-        print(f"[AggregatorQuery3] Generando resultados finales...")
-        print(f"[AggregatorQuery3] Total combinaciones procesadas: {len(self.semester_store_tpv)}")
+    def generate_final_results(self, session_id):
+        """Genera los resultados finales para Query 3 con JOIN para una sesión específica."""
+        session_data = self.get_session_data(session_id)
+        
+        print(f"[AggregatorQuery3] Generando resultados finales para sesión {session_id}...")
+        print(f"[AggregatorQuery3] Total combinaciones procesadas: {len(session_data['semester_store_tpv'])}")
         print(f"[AggregatorQuery3] Stores disponibles para JOIN: {len(self.store_id_to_name)}")
         
-        if not self.semester_store_tpv:
-            print(f"[AggregatorQuery3] No hay datos para procesar")
+        if not session_data['semester_store_tpv']:
+            print(f"[AggregatorQuery3] No hay datos para procesar en sesión {session_id}")
             return []
         
         if not self.store_id_to_name:
@@ -99,7 +117,7 @@ class AggregatorQuery3:
         final_results = []
         
         # Procesar cada combinación (semestre, store_id) con JOIN
-        for (semester, store_id), total_tpv in self.semester_store_tpv.items():
+        for (semester, store_id), total_tpv in session_data['semester_store_tpv'].items():
             # JOIN: buscar store_name para el store_id
             store_name = self.store_id_to_name.get(store_id)
             
@@ -146,81 +164,92 @@ shutdown_event = None
 
 def on_tpv_message(body):
     """Maneja mensajes de TPV de group_by_query3."""
-    # Si ya enviamos resultados, ignorar mensajes adicionales
-    if aggregator.results_sent:
-        return
-    
     try:
         header, rows = deserialize_message(body)
     except Exception as e:
         print(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
+        return
+    
+    session_id = header.get("session_id", "unknown")
+    
+    # Inicializar contadores por sesión si no existen
+    if session_id not in eos_count:
+        eos_count[session_id] = 0
+    
+    # Si ya enviamos resultados para esta sesión, ignorar mensajes adicionales
+    session_data = aggregator.get_session_data(session_id)
+    if session_data['results_sent']:
         return
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         with eos_lock:
-            global eos_count
-            eos_count += 1
-            print(f"[AggregatorQuery3] EOS recibido en TPV ({eos_count}/{NUM_GROUP_BY_QUERY3_WORKERS})")
+            eos_count[session_id] += 1
+            print(f"[AggregatorQuery3] EOS recibido en TPV para sesión {session_id} ({eos_count[session_id]}/{NUM_GROUP_BY_QUERY3_WORKERS})")
             
-            # Solo procesar cuando recibimos de TODOS los workers
-            if eos_count < NUM_GROUP_BY_QUERY3_WORKERS:
-                print(f"[AggregatorQuery3] Esperando más EOS...")
+            # Solo procesar cuando recibimos de TODOS los workers para esta sesión
+            if eos_count[session_id] < NUM_GROUP_BY_QUERY3_WORKERS:
+                print(f"[AggregatorQuery3] Esperando más EOS para sesión {session_id}...")
                 return
             
-            print("[AggregatorQuery3] ✅ EOS recibido de TODOS los workers. Marcando como listo...")
-            aggregator.eos_received = True
+            print(f"[AggregatorQuery3] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
+            session_data['eos_received'] = True
+            session_data['eos_tpv_done'] = True
             
-            # Si ya tenemos stores cargadas y no hemos enviado, generar resultados
-            if aggregator.stores_loaded and not aggregator.results_sent:
-                generate_and_send_results()
+            # Si ya tenemos stores cargadas y no hemos enviado, generar resultados para esta sesión
+            if aggregator.stores_loaded and not session_data['results_sent']:
+                generate_and_send_results(session_id)
         return
     
-    # Procesamiento normal: acumular TPV parciales
+    # Procesamiento normal: acumular TPV parciales para esta sesión
     if rows:
-        aggregator.accumulate_tpv(rows)
+        aggregator.accumulate_tpv(rows, session_id)
 
 def on_stores_message(body):
     """Maneja mensajes de stores para el JOIN."""
-    # Si ya enviamos resultados, ignorar mensajes adicionales
-    if aggregator.results_sent:
-        return
-    
     try:
         header, rows = deserialize_message(body)
     except Exception as e:
         print(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
         return
     
+    session_id = header.get("session_id", "unknown")
+    
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[AggregatorQuery3] EOS recibido en stores. Marcando como listo...")
+        print(f"[AggregatorQuery3] EOS recibido en stores para sesión {session_id}. Marcando como listo...")
         aggregator.stores_loaded = True
+        aggregator.eos_stores_done = True
         
-        # Si ya recibimos EOS de TPV y no hemos enviado, generar resultados
-        if aggregator.eos_received and not aggregator.results_sent:
-            generate_and_send_results()
+        # Generar resultados para todas las sesiones que estén esperando
+        for sid, sdata in aggregator.session_data.items():
+            if sdata['eos_received'] and not sdata['results_sent']:
+                print(f"[AggregatorQuery3] Generando resultados para sesión {sid}...")
+                generate_and_send_results(sid)
         return
     
     # Cargar stores para JOIN
     if rows:
         aggregator.load_stores(rows)
 
-def generate_and_send_results():
-    """Genera y envía los resultados finales cuando ambos flujos terminaron."""
+def generate_and_send_results(session_id):
+    """Genera y envía los resultados finales cuando ambos flujos terminaron para una sesión específica."""
     global shutdown_event, mq_out
     
-    # Evitar procesamiento duplicado
-    if aggregator.results_sent:
+    session_data = aggregator.get_session_data(session_id)
+    
+    # Evitar procesamiento duplicado para esta sesión
+    if session_data['results_sent']:
+        print(f"[AggregatorQuery3] ⚠️ Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
         return
     
-    print("[AggregatorQuery3] Ambos flujos completados. Generando resultados finales...")
+    print(f"[AggregatorQuery3] 🔚 Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
     
     # Marcar como enviado ANTES de generar para evitar race conditions
-    aggregator.results_sent = True
+    session_data['results_sent'] = True
     
-    # Generar resultados finales
-    final_results = aggregator.generate_final_results()
+    # Generar resultados finales para esta sesión
+    final_results = aggregator.generate_final_results(session_id)
     
     if final_results:
         # Enviar resultados finales con headers completos
@@ -271,9 +300,7 @@ def generate_and_send_results():
             if not sent:
                 print(f"[AggregatorQuery3] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
     
-    print("[AggregatorQuery3] Resultados finales enviados. Agregador terminado.")
-    if shutdown_event:
-        shutdown_event.set()
+    print(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo.")
 
 if __name__ == "__main__":
     import threading
@@ -323,8 +350,16 @@ if __name__ == "__main__":
         tpv_thread.start()
         stores_thread.start()
         
-        # Esperar hasta recibir EOS
-        shutdown_event.wait()
+        # Esperar indefinidamente - el worker NO termina después de EOS
+        # Solo termina por señal externa (SIGTERM, SIGINT)
+        print("[AggregatorQuery3] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery3] 💡 El worker continuará procesando múltiples clientes")
+        
+        # Loop principal - solo termina por señal
+        while not shutdown_event.is_set():
+            time.sleep(1)
+        
+        print("[AggregatorQuery3] ✅ Terminando por señal externa")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery3] Interrupción recibida")

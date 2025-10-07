@@ -2,11 +2,18 @@ import sys
 import os
 import signal
 import threading
+import time
 import re
 from collections import defaultdict
+from datetime import datetime
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+def log_with_timestamp(message):
+    """Función para logging con timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] {message}")
 
 from middleware.middleware import MessageMiddlewareExchange, MessageMiddlewareQueue
 from workers.utils import deserialize_message, serialize_message
@@ -21,7 +28,7 @@ OUTPUT_EXCHANGE = "results_query4"        # exchange de salida para resultados f
 ROUTING_KEY = "query4_results"            # routing para resultados
 
 # Control de EOS
-eos_count = 0
+eos_count = {}  # {session_id: count}
 eos_lock = threading.Lock()
 
 # Exchanges adicionales para JOIN
@@ -44,20 +51,34 @@ def canonicalize_id(value):
 
 class AggregatorQuery4:
     def __init__(self):
-        # Acumulador de transaction_count por (store_id, user_id)
-        # Estructura: {(store_id, user_id): transaction_count}
-        self.store_user_transactions = defaultdict(int)
+        # Datos por sesión: {session_id: session_data}
+        self.session_data = {}
         
-        # Diccionarios para JOIN
+        # Diccionarios globales para JOIN (compartidos entre sesiones)
         self.store_id_to_name = {}  # store_id -> store_name
         self.user_id_to_birthdate = {}  # user_id -> birthdate
         
-        # Control de flujo
-        self.batches_received = 0
+        # Control de flujo global
         self.stores_loaded = False
         self.users_loaded = False
-        self.eos_received = False
-        self.results_sent = False
+        self.eos_stores_done = False
+        self.eos_users_done = False
+    
+    def initialize_session(self, session_id):
+        """Inicializa datos para una nueva sesión"""
+        if session_id not in self.session_data:
+            self.session_data[session_id] = {
+                'store_user_transactions': defaultdict(int),
+                'batches_received': 0,
+                'eos_received': False,
+                'results_sent': False,
+                'eos_transactions_done': False
+            }
+    
+    def get_session_data(self, session_id):
+        """Obtiene los datos de una sesión específica"""
+        self.initialize_session(session_id)
+        return self.session_data[session_id]
         
     def load_stores(self, rows):
         """Carga stores para construir el diccionario store_id -> store_name."""
@@ -98,8 +119,9 @@ class AggregatorQuery4:
         
         print(f"[AggregatorQuery4] Users cargados para JOIN: {len(self.user_id_to_birthdate)}")
     
-    def accumulate_transactions(self, rows):
-        """Acumula conteos de transacciones de group_by_query4."""
+    def accumulate_transactions(self, rows, session_id):
+        """Acumula conteos de transacciones de group_by_query4 para una sesión específica."""
+        session_data = self.get_session_data(session_id)
         processed_count = 0
         
         for row in rows:
@@ -125,22 +147,24 @@ class AggregatorQuery4:
                 continue
             key = (normalized_store_id, normalized_user_id)
             
-            # Acumular conteo de transacciones
-            self.store_user_transactions[key] += transaction_count
+            # Acumular conteo de transacciones para esta sesión
+            session_data['store_user_transactions'][key] += transaction_count
             processed_count += 1
         
-        self.batches_received += 1
+        session_data['batches_received'] += 1
         
         # OPTIMIZACIÓN: Logs menos frecuentes para mejor performance
-        if self.batches_received % 100 == 0 or self.batches_received <= 5:
-            print(f"[AggregatorQuery4] Batch {self.batches_received}: {processed_count}/{len(rows)} procesados; total combinaciones={len(self.store_user_transactions)}")
+        if session_data['batches_received'] % 100 == 0 or session_data['batches_received'] <= 5:
+            print(f"[AggregatorQuery4] Sesión {session_id}: Batch {session_data['batches_received']}: {processed_count}/{len(rows)} procesados; total combinaciones={len(session_data['store_user_transactions'])}")
     
-    def generate_final_results(self):
-        """Genera los resultados finales para Query 4 con doble JOIN y TOP 3."""
-        print(f"[AggregatorQuery4] Generando resultados... combinaciones={len(self.store_user_transactions)}, stores={len(self.store_id_to_name)}, users={len(self.user_id_to_birthdate)}")
+    def generate_final_results(self, session_id):
+        """Genera los resultados finales para Query 4 con doble JOIN y TOP 3 para una sesión específica."""
+        session_data = self.get_session_data(session_id)
         
-        if not self.store_user_transactions:
-            print(f"[AggregatorQuery4] No hay datos para procesar")
+        print(f"[AggregatorQuery4] Generando resultados para sesión {session_id}... combinaciones={len(session_data['store_user_transactions'])}, stores={len(self.store_id_to_name)}, users={len(self.user_id_to_birthdate)}")
+        
+        if not session_data['store_user_transactions']:
+            print(f"[AggregatorQuery4] No hay datos para procesar en sesión {session_id}")
             return []
         
         if not self.store_id_to_name:
@@ -156,7 +180,7 @@ class AggregatorQuery4:
         missing_stores = set()
         missing_users = set()
         
-        for (store_id, user_id), transaction_count in self.store_user_transactions.items():
+        for (store_id, user_id), transaction_count in session_data['store_user_transactions'].items():
             # JOIN con stores: obtener store_name
             store_name = self.store_id_to_name.get(store_id)
             if not store_name:
@@ -223,52 +247,68 @@ shutdown_event = None
 
 def on_transactions_message(body):
     """Maneja mensajes de conteos de transacciones de group_by_query4."""
-    # Si ya enviamos resultados, ignorar mensajes adicionales
-    if aggregator.results_sent:
+    try:
+        header, rows = deserialize_message(body)
+    except Exception as e:
+        print(f"[AggregatorQuery4] Error deserializando mensaje: {e}")
         return
     
-    header, rows = deserialize_message(body)
+    session_id = header.get("session_id", "unknown")
+    
+    # Inicializar contadores por sesión si no existen
+    if session_id not in eos_count:
+        eos_count[session_id] = 0
+    
+    # Si ya enviamos resultados para esta sesión, ignorar mensajes adicionales
+    session_data = aggregator.get_session_data(session_id)
+    if session_data['results_sent']:
+        return
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         with eos_lock:
-            global eos_count
-            eos_count += 1
-            print(f"[AggregatorQuery4] EOS recibido en transacciones ({eos_count}/{NUM_GROUP_BY_QUERY4_WORKERS})")
+            eos_count[session_id] += 1
+            log_with_timestamp(f"[AggregatorQuery4] EOS recibido en transacciones para sesión {session_id} ({eos_count[session_id]}/{NUM_GROUP_BY_QUERY4_WORKERS})")
             
-            # Solo procesar cuando recibimos de TODOS los workers
-            if eos_count < NUM_GROUP_BY_QUERY4_WORKERS:
-                print(f"[AggregatorQuery4] Esperando más EOS...")
+            # Solo procesar cuando recibimos de TODOS los workers para esta sesión
+            if eos_count[session_id] < NUM_GROUP_BY_QUERY4_WORKERS:
+                print(f"[AggregatorQuery4] Esperando más EOS para sesión {session_id}...")
                 return
             
-            print("[AggregatorQuery4] ✅ EOS recibido de TODOS los workers. Marcando como listo...")
-            aggregator.eos_received = True
+            log_with_timestamp(f"[AggregatorQuery4] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
+            session_data['eos_received'] = True
+            session_data['eos_transactions_done'] = True
             
-            # Si ya tenemos stores y users cargados, generar resultados (una sola vez)
-            if aggregator.stores_loaded and aggregator.users_loaded and not aggregator.results_sent:
-                generate_and_send_results()
+            # Si ya tenemos stores y users cargados, generar resultados para esta sesión
+            if aggregator.stores_loaded and aggregator.users_loaded and not session_data['results_sent']:
+                generate_and_send_results(session_id)
         return
     
-    # Procesamiento normal: acumular conteos de transacciones
+    # Procesamiento normal: acumular conteos de transacciones para esta sesión
     if rows:
-        aggregator.accumulate_transactions(rows)
+        aggregator.accumulate_transactions(rows, session_id)
 
 def on_stores_message(body):
     """Maneja mensajes de stores para el JOIN."""
-    # Si ya enviamos resultados, ignorar mensajes adicionales
-    if aggregator.results_sent:
+    try:
+        header, rows = deserialize_message(body)
+    except Exception as e:
+        print(f"[AggregatorQuery4] Error deserializando mensaje: {e}")
         return
     
-    header, rows = deserialize_message(body)
+    session_id = header.get("session_id", "unknown")
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[AggregatorQuery4] EOS recibido en stores. Marcando como listo...")
+        print(f"[AggregatorQuery4] EOS recibido en stores para sesión {session_id}. Marcando como listo...")
         aggregator.stores_loaded = True
+        aggregator.eos_stores_done = True
         
-        # Si ya recibimos EOS de transacciones y users cargados, generar resultados (una sola vez)
-        if aggregator.eos_received and aggregator.users_loaded and not aggregator.results_sent:
-            generate_and_send_results()
+        # Generar resultados para todas las sesiones que estén esperando
+        for sid, sdata in aggregator.session_data.items():
+            if sdata['eos_received'] and aggregator.users_loaded and not sdata['results_sent']:
+                print(f"[AggregatorQuery4] Generando resultados para sesión {sid}...")
+                generate_and_send_results(sid)
         return
     
     # Cargar stores para JOIN
@@ -278,20 +318,25 @@ def on_stores_message(body):
 
 def on_users_message(body):
     """Maneja mensajes de users para el JOIN."""
-    # Si ya enviamos resultados, ignorar mensajes adicionales
-    if aggregator.results_sent:
+    try:
+        header, rows = deserialize_message(body)
+    except Exception as e:
+        print(f"[AggregatorQuery4] Error deserializando mensaje: {e}")
         return
     
-    header, rows = deserialize_message(body)
+    session_id = header.get("session_id", "unknown")
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        print("[AggregatorQuery4] EOS recibido en users. Marcando como listo...")
+        print(f"[AggregatorQuery4] EOS recibido en users para sesión {session_id}. Marcando como listo...")
         aggregator.users_loaded = True
+        aggregator.eos_users_done = True
         
-        # Si ya recibimos EOS de transacciones y stores cargadas, generar resultados (una sola vez)
-        if aggregator.eos_received and aggregator.stores_loaded and not aggregator.results_sent:
-            generate_and_send_results()
+        # Generar resultados para todas las sesiones que estén esperando
+        for sid, sdata in aggregator.session_data.items():
+            if sdata['eos_received'] and aggregator.stores_loaded and not sdata['results_sent']:
+                print(f"[AggregatorQuery4] Generando resultados para sesión {sid}...")
+                generate_and_send_results(sid)
         return
     
     # Cargar users para JOIN
@@ -299,21 +344,24 @@ def on_users_message(body):
         # OPTIMIZACIÓN: Eliminar logs de debug excesivos
         aggregator.load_users(rows)
 
-def generate_and_send_results():
-    """Genera y envía los resultados finales cuando todos los flujos terminaron."""
+def generate_and_send_results(session_id):
+    """Genera y envía los resultados finales cuando todos los flujos terminaron para una sesión específica."""
     global shutdown_event, mq_out
     
-    # Evitar procesamiento duplicado
-    if aggregator.results_sent:
+    session_data = aggregator.get_session_data(session_id)
+    
+    # Evitar procesamiento duplicado para esta sesión
+    if session_data['results_sent']:
+        print(f"[AggregatorQuery4] ⚠️ Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
         return
     
-    print("[AggregatorQuery4] Todos los flujos completados. Generando resultados finales...")
+    print(f"[AggregatorQuery4] 🔚 Todos los flujos completados para sesión {session_id}. Generando resultados finales...")
     
     # Marcar como enviado ANTES de generar para evitar race conditions
-    aggregator.results_sent = True
+    session_data['results_sent'] = True
     
-    # Generar resultados finales
-    final_results = aggregator.generate_final_results()
+    # Generar resultados finales para esta sesión
+    final_results = aggregator.generate_final_results(session_id)
     
     if final_results:
         # Enviar resultados finales con headers completos
@@ -389,9 +437,7 @@ def generate_and_send_results():
     except Exception as e:
         print(f"[AggregatorQuery4] Error deteniendo users: {e}")
     
-    # Señalar shutdown
-    if shutdown_event:
-        shutdown_event.set()
+    print(f"[AggregatorQuery4] Resultados finales enviados para sesión {session_id}. Worker continúa activo.")
 
 if __name__ == "__main__":
     import threading
@@ -453,9 +499,16 @@ if __name__ == "__main__":
         stores_thread.start()
         users_thread.start()
         
-        # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
-        shutdown_event.wait()
-        print("[AggregatorQuery4] Terminando por señal de shutdown")
+        # Esperar indefinidamente - el worker NO termina después de EOS
+        # Solo termina por señal externa (SIGTERM, SIGINT)
+        print("[AggregatorQuery4] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery4] 💡 El worker continuará procesando múltiples clientes")
+        
+        # Loop principal - solo termina por señal
+        while not shutdown_event.is_set():
+            time.sleep(1)
+        
+        print("[AggregatorQuery4] ✅ Terminando por señal externa")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery4] Interrupción recibida")

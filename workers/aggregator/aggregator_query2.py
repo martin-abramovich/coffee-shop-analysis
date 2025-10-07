@@ -368,8 +368,17 @@ def generate_and_send_results(session_id):
     else:
         print("[AggregatorQuery2] No hay resultados para enviar")
     
-    print("[AggregatorQuery2] Resultados finales enviados. Agregador terminado.")
-    shutdown_event.set()
+    print(f"[AggregatorQuery2] Resultados finales enviados para sesión {session_id}. Worker continúa activo.")
+    
+    # Limpiar datos de la sesión completada después de un delay
+    def delayed_cleanup():
+        time.sleep(10)  # Esperar 10 segundos antes de limpiar
+        if session_id in aggregator.session_data:
+            del aggregator.session_data[session_id]
+            print(f"[AggregatorQuery2] Sesión {session_id} limpiada de memoria")
+    
+    cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+    cleanup_thread.start()
 
 if __name__ == "__main__":
     import threading
@@ -422,9 +431,16 @@ if __name__ == "__main__":
         metrics_thread.start()
         menu_items_thread.start()
         
-        # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
-        shutdown_event.wait()
-        print("[AggregatorQuery2] ✅ Terminando por EOS completo o señal")
+        # Esperar indefinidamente - el worker NO termina después de EOS
+        # Solo termina por señal externa (SIGTERM, SIGINT)
+        print("[AggregatorQuery2] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery2] 💡 El worker continuará procesando múltiples clientes")
+        
+        # Loop principal - solo termina por señal
+        while not shutdown_event.is_set():
+            time.sleep(1)
+        
+        print("[AggregatorQuery2] ✅ Terminando por señal externa")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery2] Interrupción recibida")

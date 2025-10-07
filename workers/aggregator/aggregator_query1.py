@@ -3,9 +3,15 @@ import os
 import signal
 import threading
 import time
+from datetime import datetime
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+def log_with_timestamp(message):
+    """Función para logging con timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] {message}")
 
 from middleware.middleware import MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
@@ -134,7 +140,7 @@ if __name__ == "__main__":
         # Verificar si es mensaje de End of Stream
         if header.get("is_eos") == "true":
             count = eos_counter.increment(session_id)
-            print(f"[AggregatorQuery1] 🔚 EOS recibido para sesión {session_id} ({count}/{NUM_FILTER_AMOUNT_WORKERS})")
+            log_with_timestamp(f"[AggregatorQuery1] 🔚 EOS recibido para sesión {session_id} ({count}/{NUM_FILTER_AMOUNT_WORKERS})")
             
             # Solo procesar cuando recibimos de TODOS los workers para esta sesión
             if count < NUM_FILTER_AMOUNT_WORKERS:
@@ -146,7 +152,7 @@ if __name__ == "__main__":
                 print(f"[AggregatorQuery1] ⚠️ EOS duplicado ignorado para sesión {session_id} (resultados ya enviados)")
                 return
             
-            print(f"[AggregatorQuery1] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Generando resultados finales...")
+            log_with_timestamp(f"[AggregatorQuery1] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Generando resultados finales...")
             results_sent[session_id] = True
             
             # Generar resultados finales para esta sesión

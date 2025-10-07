@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
+def log_with_timestamp(message):
+    """Función para logging con timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] {message}")
+
 from gateway.processor import process_batch_by_type
 from gateway.serializer import serialize_message
 
@@ -305,8 +310,8 @@ def handle_client(conn, addr, mq_map):
     
     
     
-    print(f"[GATEWAY] Nueva sesión {session_id} desde {addr}")
-    print(f"[GATEWAY] Sesiones activas: {len(active_sessions)}")
+    log_with_timestamp(f"[GATEWAY] Nueva sesión {session_id} desde {addr}")
+    log_with_timestamp(f"[GATEWAY] Sesiones activas: {len(active_sessions)}")
     
     buffer = b""
     batch_id = 0
