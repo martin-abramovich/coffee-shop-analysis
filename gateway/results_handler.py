@@ -28,6 +28,8 @@ class ResultsHandler:
         self.output_dir = output_dir
         # Ahora results es un diccionario anidado: {session_id: {query_name: [rows]}}
         self.results = defaultdict(lambda: defaultdict(list))
+        # Lock para proteger acceso concurrente a self.results
+        self.lock = threading.Lock()
         os.makedirs(self.output_dir, exist_ok=True)
         print(f"[ResultsHandler] Directorio: {self.output_dir}")
     
@@ -38,12 +40,16 @@ class ResultsHandler:
         print(f"[ResultsHandler] {query_name} (sesión {session_id}): filas={len(rows)} batch={header.get('batch_number', '?')}/{header.get('total_batches', '?')}")
         
         if header.get('is_final_result') == 'true':
-            # Acumular resultados por sesión y query
-            self.results[session_id][query_name].extend(rows)
-            
             batch_num = header.get('batch_number', '?')
             total_batches = header.get('total_batches', '?')
-            print(f"[ResultsHandler] {query_name} (sesión {session_id}): Batch {batch_num}/{total_batches} acumulado={len(self.results[session_id][query_name])}")
+            
+            # Proteger acceso concurrente a self.results
+            with self.lock:
+                # Acumular resultados por sesión y query
+                self.results[session_id][query_name].extend(rows)
+                current_count = len(self.results[session_id][query_name])
+            
+            print(f"[ResultsHandler] {query_name} (sesión {session_id}): Batch {batch_num}/{total_batches} acumulado={current_count}")
             
             if batch_num == total_batches:
                 print(f"[ResultsHandler] Último batch recibido para {query_name} (sesión {session_id}), guardando resultados...")
@@ -52,16 +58,23 @@ class ResultsHandler:
             print(f"[ResultsHandler] Mensaje ignorado - is_final_result={header.get('is_final_result')}")
     
     def save_results(self, query_name, header, session_id):
-        # Usar results[session_id][query_name]
-        results_list = self.results[session_id][query_name]
+        # Proteger lectura de results con lock
+        with self.lock:
+            results_list = self.results[session_id][query_name].copy()
+        
         if not results_list:
             return
         
-        # Guardar resultados con nombre de archivo estándar (sobreescribe para cada sesión)
-        # Para multiclient secuencial, el último cliente sobreescribe los resultados
-        output_file = os.path.join(self.output_dir, f"{query_name}.csv")
+        # Crear directorio por sesión para evitar sobrescritura en ejecuciones concurrentes
+        session_dir = os.path.join(self.output_dir, f"session_{session_id}")
+        os.makedirs(session_dir, exist_ok=True)
+        
+        # Archivo en directorio de la sesión
+        output_file = os.path.join(session_dir, f"{query_name}.csv")
+        
         columns = list(results_list[0].keys())
         
+        # Guardar SOLO en directorio de sesión (no sobrescribir archivos generales)
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(','.join(columns) + '\n')
             for row in results_list:

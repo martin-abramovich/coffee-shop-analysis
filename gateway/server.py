@@ -20,7 +20,10 @@ from gateway.serializer import serialize_message
 
 # Wrapper para manejar round-robin en exchanges escalables
 class ScalableExchangeWrapper:
-    """Wrapper que distribuye mensajes con round-robin y hace broadcast de EOS"""
+    """Wrapper que distribuye mensajes con round-robin y hace broadcast de EOS
+    
+    Cada thread tiene su propia instancia, por lo que NO necesita locks.
+    """
     def __init__(self, exchange, num_workers):
         self.exchange = exchange
         self.num_workers = num_workers
@@ -248,9 +251,10 @@ def parse_item(data, offset, entity_type):
     
     return item, offset
 
-def send_eos_to_worker_simple(session_id, entity_type, mq_map, scalable_exchanges):
+def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges):
     """
     Envía EOS a un worker específico tan pronto como termina de procesar ese tipo de entidad.
+    Usa las conexiones del thread (thread_mq_map) que son seguras sin locks adicionales.
     """
     # Preparar mensaje EOS con ID de sesión
     eos_msg = serialize_message(
@@ -268,7 +272,8 @@ def send_eos_to_worker_simple(session_id, entity_type, mq_map, scalable_exchange
             scalable_exchanges[entity_type].send(eos_msg, is_eos=True)
             print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a workers de {entity_type}")
         else:
-            mq_map[entity_type].send(eos_msg)
+            # Usar conexión del thread (thread-safe por diseño, sin lock necesario)
+            thread_mq_map[entity_type].send(eos_msg)
             print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a {entity_type}")
     except Exception as e:
         print(f"[GATEWAY] Sesión {session_id}: ❌ Error enviando EOS a {entity_type}: {e}")
@@ -308,8 +313,6 @@ def handle_client(conn, addr, mq_map):
     with sessions_lock:
         active_sessions[session_id] = session
     
-    
-    
     log_with_timestamp(f"[GATEWAY] Nueva sesión {session_id} desde {addr}")
     log_with_timestamp(f"[GATEWAY] Sesiones activas: {len(active_sessions)}")
     
@@ -320,19 +323,58 @@ def handle_client(conn, addr, mq_map):
     config = mq_map.get("_config", {})
     num_filter_year_workers = config.get("num_filter_year_workers", 1)
     
-    # Crear wrappers para exchanges escalables (transactions y transaction_items)
-    scalable_exchanges = {}
-    if "transactions" in mq_map and hasattr(mq_map["transactions"], "exchange_name"):
-        scalable_exchanges["transactions"] = ScalableExchangeWrapper(
-            mq_map["transactions"], 
-            num_filter_year_workers
+    # CREAR CONEXIONES PROPIAS PARA ESTE THREAD (no compartir conexiones)
+    # Esto evita problemas de "Channel is closed" en concurrencia
+    from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
+    import os
+    
+    RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
+    filter_year_route_keys = [f"worker_{i}" for i in range(num_filter_year_workers)] + ["eos"]
+    
+    # Crear conexiones exclusivas para este thread
+    thread_mq_map = {}
+    try:
+        thread_mq_map["transactions"] = MessageMiddlewareExchange(
+            host=RABBITMQ_HOST,
+            exchange_name="transactions_raw",
+            route_keys=filter_year_route_keys
+        )
+        thread_mq_map["transaction_items"] = MessageMiddlewareExchange(
+            host=RABBITMQ_HOST,
+            exchange_name="transaction_items_raw",
+            route_keys=filter_year_route_keys
+        )
+        thread_mq_map["users"] = MessageMiddlewareQueue(
+            host=RABBITMQ_HOST, 
+            queue_name="users_raw"
+        )
+        thread_mq_map["menu_items"] = MessageMiddlewareQueue(
+            host=RABBITMQ_HOST, 
+            queue_name="menu_items_raw"
+        )
+        thread_mq_map["stores"] = MessageMiddlewareExchange(
+            host=RABBITMQ_HOST,
+            exchange_name="stores_raw",
+            route_keys=["q3", "q4"]
         )
         
-    if "transaction_items" in mq_map and hasattr(mq_map["transaction_items"], "exchange_name"):
-        scalable_exchanges["transaction_items"] = ScalableExchangeWrapper(
-            mq_map["transaction_items"], 
-            num_filter_year_workers
-        )
+        log_with_timestamp(f"[GATEWAY] Sesión {session_id}: Conexiones RabbitMQ creadas para este thread")
+        
+    except Exception as e:
+        log_with_timestamp(f"[GATEWAY] Sesión {session_id}: Error creando conexiones: {e}")
+        conn.close()
+        return
+    
+    # Crear wrappers escalables con las conexiones de este thread
+    scalable_exchanges = {}
+    scalable_exchanges["transactions"] = ScalableExchangeWrapper(
+        thread_mq_map["transactions"], 
+        num_filter_year_workers
+    )
+    scalable_exchanges["transaction_items"] = ScalableExchangeWrapper(
+        thread_mq_map["transaction_items"], 
+        num_filter_year_workers
+    )
     
     try:
         while True:
@@ -381,12 +423,13 @@ def handle_client(conn, addr, mq_map):
                             except Exception as e:
                                 print(f"[GATEWAY] Sesión {session_id}: Error enviando al middleware ({entity_type}): {e}")
                         else:
-                            # Envío normal para colas/exchanges no escalables
-                            target_mq = mq_map.get(entity_type)
+                            # Envío normal para colas/exchanges no escalables (usando conexiones del thread)
+                            target_mq = thread_mq_map.get(entity_type)
                             if not target_mq:
                                 print(f"[GATEWAY] No hay cola configurada para tipo {entity_type}, descartando batch")
                             else:
                                 try:
+                                    # Usar conexión propia del thread (thread-safe por diseño)
                                     target_mq.send(msg)
                                 except Exception as e:
                                     print(f"[GATEWAY] Error enviando al middleware ({entity_type}): {e}")
@@ -394,21 +437,20 @@ def handle_client(conn, addr, mq_map):
                                     if "conexión" in str(e).lower() or "connection" in str(e).lower():
                                         print(f"[GATEWAY] Intentando reconectar {entity_type}...")
                                         try:
-                                            # Recrear la conexión
-                                            from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
+                                            # Recrear la conexión en el thread
                                             if entity_type == "stores":
-                                                mq_map[entity_type] = MessageMiddlewareExchange(
-                                                    host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                                                thread_mq_map[entity_type] = MessageMiddlewareExchange(
+                                                    host=RABBITMQ_HOST, 
                                                     exchange_name="stores_raw",
                                                     route_keys=["q3", "q4"]
                                                 )
                                             else:
-                                                mq_map[entity_type] = MessageMiddlewareQueue(
-                                                    host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'), 
+                                                thread_mq_map[entity_type] = MessageMiddlewareQueue(
+                                                    host=RABBITMQ_HOST, 
                                                     queue_name=f"{entity_type}_raw"
                                                 )
                                             print(f"[GATEWAY] Reconectado {entity_type}, reintentando envío...")
-                                            target_mq = mq_map[entity_type]
+                                            target_mq = thread_mq_map[entity_type]
                                             target_mq.send(msg)
                                             print(f"[GATEWAY] Reenvío exitoso para {entity_type}")
                                         except Exception as retry_e:
@@ -440,8 +482,8 @@ def handle_client(conn, addr, mq_map):
         
         # Enviar EOS a cada tipo de worker que procesamos
         for entity_type in ["transactions", "transaction_items", "users", "stores", "menu_items"]:
-            if entity_type in mq_map and entity_type != "_config":
-                send_eos_to_worker_simple(session_id, entity_type, mq_map, scalable_exchanges)
+            if entity_type in thread_mq_map:
+                send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
         
         
         # Enviar ACK final al cliente (4 bytes longitud + payload UTF-8)
@@ -452,6 +494,14 @@ def handle_client(conn, addr, mq_map):
             conn.sendall(header + payload)
         except Exception:
             pass
+        # Cerrar conexiones del thread
+        print(f"[GATEWAY] Sesión {session_id}: Cerrando conexiones RabbitMQ...")
+        for entity_type, mq in thread_mq_map.items():
+            try:
+                mq.close()
+            except Exception as e:
+                print(f"[GATEWAY] Sesión {session_id}: Error cerrando {entity_type}: {e}")
+        
         try:
             conn.close()
         finally:
