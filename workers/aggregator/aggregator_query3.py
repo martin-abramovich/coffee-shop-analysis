@@ -32,13 +32,6 @@ class AggregatorQuery3:
     def __init__(self):
         # Datos por sesión: {session_id: session_data}
         self.session_data = {}
-        
-        # Diccionario global para JOIN: store_id -> store_name (compartido entre sesiones)
-        self.store_id_to_name = {}
-        
-        # Control de flujo global
-        self.stores_loaded = False
-        self.eos_stores_done = False
     
     def initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
@@ -48,7 +41,12 @@ class AggregatorQuery3:
                 'batches_received': 0,
                 'eos_received': False,
                 'results_sent': False,
-                'eos_tpv_done': False
+                'eos_tpv_done': False,
+                # Diccionario de JOIN específico de esta sesión
+                'store_id_to_name': {},
+                # Control de flujo específico de esta sesión
+                'stores_loaded': False,
+                'eos_stores_done': False
             }
     
     def get_session_data(self, session_id):
@@ -56,16 +54,18 @@ class AggregatorQuery3:
         self.initialize_session(session_id)
         return self.session_data[session_id]
         
-    def load_stores(self, rows):
-        """Carga stores para construir el diccionario store_id -> store_name."""
+    def load_stores(self, rows, session_id):
+        """Carga stores para construir el diccionario store_id -> store_name para una sesión específica."""
+        session_data = self.get_session_data(session_id)
+        
         for row in rows:
             store_id = row.get('store_id')
             store_name = row.get('store_name')
             
             if store_id and store_name:
-                self.store_id_to_name[store_id] = store_name.strip()
+                session_data['store_id_to_name'][store_id] = store_name.strip()
         
-        print(f"[AggregatorQuery3] Cargadas {len(self.store_id_to_name)} stores para JOIN")
+        print(f"[AggregatorQuery3] Sesión {session_id}: Cargadas {len(session_data['store_id_to_name'])} stores para JOIN")
     
     def accumulate_tpv(self, rows, session_id):
         """Acumula TPV parciales de group_by_query3 para una sesión específica."""
@@ -104,22 +104,22 @@ class AggregatorQuery3:
         
         print(f"[AggregatorQuery3] Generando resultados finales para sesión {session_id}...")
         print(f"[AggregatorQuery3] Total combinaciones procesadas: {len(session_data['semester_store_tpv'])}")
-        print(f"[AggregatorQuery3] Stores disponibles para JOIN: {len(self.store_id_to_name)}")
+        print(f"[AggregatorQuery3] Stores disponibles para JOIN: {len(session_data['store_id_to_name'])}")
         
         if not session_data['semester_store_tpv']:
             print(f"[AggregatorQuery3] No hay datos para procesar en sesión {session_id}")
             return []
         
-        if not self.store_id_to_name:
-            print(f"[AggregatorQuery3] WARNING: No hay stores cargadas. No se puede hacer JOIN.")
+        if not session_data['store_id_to_name']:
+            print(f"[AggregatorQuery3] WARNING: No hay stores cargadas para sesión {session_id}. No se puede hacer JOIN.")
             return []
         
         final_results = []
         
         # Procesar cada combinación (semestre, store_id) con JOIN
         for (semester, store_id), total_tpv in session_data['semester_store_tpv'].items():
-            # JOIN: buscar store_name para el store_id
-            store_name = self.store_id_to_name.get(store_id)
+            # JOIN: buscar store_name para el store_id de esta sesión
+            store_name = session_data['store_id_to_name'].get(store_id)
             
             if not store_name:
                 print(f"[AggregatorQuery3] WARNING: store_id {store_id} no encontrado en stores")
@@ -196,8 +196,8 @@ def on_tpv_message(body):
             session_data['eos_received'] = True
             session_data['eos_tpv_done'] = True
             
-            # Si ya tenemos stores cargadas y no hemos enviado, generar resultados para esta sesión
-            if aggregator.stores_loaded and not session_data['results_sent']:
+            # Si ya tenemos stores cargadas para esta sesión y no hemos enviado, generar resultados
+            if session_data['stores_loaded'] and not session_data['results_sent']:
                 generate_and_send_results(session_id)
         return
     
@@ -214,23 +214,23 @@ def on_stores_message(body):
         return
     
     session_id = header.get("session_id", "unknown")
+    session_data = aggregator.get_session_data(session_id)
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         print(f"[AggregatorQuery3] EOS recibido en stores para sesión {session_id}. Marcando como listo...")
-        aggregator.stores_loaded = True
-        aggregator.eos_stores_done = True
+        session_data['stores_loaded'] = True
+        session_data['eos_stores_done'] = True
         
-        # Generar resultados para todas las sesiones que estén esperando
-        for sid, sdata in aggregator.session_data.items():
-            if sdata['eos_received'] and not sdata['results_sent']:
-                print(f"[AggregatorQuery3] Generando resultados para sesión {sid}...")
-                generate_and_send_results(sid)
+        # Generar resultados para esta sesión si ya tiene todo listo
+        if session_data['eos_received'] and not session_data['results_sent']:
+            print(f"[AggregatorQuery3] Generando resultados para sesión {session_id}...")
+            generate_and_send_results(session_id)
         return
     
-    # Cargar stores para JOIN
+    # Cargar stores para JOIN en esta sesión
     if rows:
-        aggregator.load_stores(rows)
+        aggregator.load_stores(rows, session_id)
 
 def generate_and_send_results(session_id):
     """Genera y envía los resultados finales cuando ambos flujos terminaron para una sesión específica."""
@@ -260,6 +260,7 @@ def generate_and_send_results(session_id):
             "is_batch_end": "true",
             "is_eos": "false",
             "query": "query3",
+            "session_id": session_id,
             "total_results": str(len(final_results)),
             "description": "TPV_por_semestre_y_sucursal_2024-2025_06:00-23:00",
             "is_final_result": "true"

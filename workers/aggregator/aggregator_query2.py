@@ -328,6 +328,7 @@ def generate_and_send_results(session_id):
             "is_batch_end": "true",
             "is_eos": "false",
             "query": "query2",
+            "session_id": session_id,
             "total_results": str(len(final_results)),
             "description": "Productos_mas_vendidos_y_mayor_ganancia_por_mes_2024-2025",
             "is_final_result": "true"
