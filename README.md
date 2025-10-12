@@ -11,6 +11,11 @@ Sistema distribuido para análisis de datos de coffee shops con soporte para mú
 - **Limpieza correcta** de recursos después de cada ejecución
 - **Logs de depuración** detallados para visibilidad del protocolo
 
+### ✅ Especificación Dinámica de Carpetas de Datos
+- **Carpetas dinámicas**: Cada cliente puede especificar su subcarpeta de datos
+- **Múltiples datasets**: Procesar diferentes datasets sin reiniciar el sistema
+- **Compatibilidad total**: Funciona con el comportamiento original
+
 ### 🔧 Mejoras Técnicas
 - Gestión de sesiones con IDs únicos (UUID)
 - Protocolo de finalización EOF que coordina N nodos a M nodos
@@ -82,6 +87,46 @@ python demo_multiple_clients.py
    python client/multi_session_client.py
    ```
 
+### Opción 3: Múltiples Carpetas de Datos
+1. Preparar estructura de datos:
+   ```
+   .data/
+   ├── dataset1/
+   │   ├── transactions.csv
+   │   ├── users.csv
+   │   └── ...
+   ├── dataset2/
+   │   ├── transactions.csv
+   │   ├── users.csv
+   │   └── ...
+   └── dataset3/
+       ├── transactions.csv
+       ├── users.csv
+       └── ...
+   ```
+
+2. Levantar el sistema:
+   ```bash
+   docker-compose up --build gateway rabbitmq # ... workers
+   ```
+
+3. Ejecutar clientes con diferentes datasets:
+   ```bash
+   # Procesar dataset1
+   docker-compose run --rm client --data-folder dataset1 --verbose
+   
+   # Procesar dataset2 (simultáneamente)
+   docker-compose run --rm client --data-folder dataset2 --verbose
+   
+   # Procesar dataset3 (simultáneamente)
+   docker-compose run --rm client --data-folder dataset3 --verbose
+   ```
+
+4. O usar el script de ejemplo:
+   ```bash
+   python examples/multiple_datasets.py
+   ```
+
 ## 🔍 Monitoreo y Debugging
 
 ### Logs del Gateway
@@ -113,7 +158,9 @@ docker-compose logs -f aggregator_query1
 │   ├── server.py               # Modificado para múltiples clientes
 │   └── main.py                 # Modificado con threading
 ├── client/
-│   └── multi_session_client.py  # Cliente de múltiples sesiones (NUEVO)
+│   ├── multi_session_client.py  # Cliente de múltiples sesiones (NUEVO)
+│   ├── main.py                 # Modificado para aceptar --data-folder
+│   └── common/client.py         # Sin cambios (funcionalidad solo en main.py)
 ├── tests/
 │   └── test_eof_protocol.py     # Test aislado del protocolo (NUEVO)
 ├── run_eof_test.py             # Script para tests EOF (NUEVO)
