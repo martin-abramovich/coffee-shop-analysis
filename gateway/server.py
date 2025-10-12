@@ -251,6 +251,33 @@ def parse_item(data, offset, entity_type):
     
     return item, offset
 
+def flush_message_buffer(session_id, entity_type, message_buffer, thread_mq_map, scalable_exchanges):
+    """
+    Envía todos los mensajes acumulados en el buffer para un tipo de entidad.
+    Esta optimización reduce la cantidad de llamadas a RabbitMQ.
+    """
+    if not message_buffer:
+        return
+    
+    try:
+        # Enviar cada mensaje del buffer
+        if entity_type in scalable_exchanges:
+            for msg in message_buffer:
+                scalable_exchanges[entity_type].send(msg, is_eos=False)
+        else:
+            target_mq = thread_mq_map.get(entity_type)
+            if target_mq:
+                for msg in message_buffer:
+                    target_mq.send(msg)
+        
+        # Limpiar el buffer después de enviar
+        message_buffer.clear()
+        
+    except Exception as e:
+        print(f"[GATEWAY] Sesión {session_id}: Error en flush de {entity_type}: {e}")
+        # En caso de error, limpiar el buffer de todos modos para evitar acumulación
+        message_buffer.clear()
+
 def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges):
     """
     Envía EOS a un worker específico tan pronto como termina de procesar ese tipo de entidad.
@@ -319,6 +346,28 @@ def handle_client(conn, addr, mq_map):
     buffer = b""
     batch_id = 0
     
+    # Buffers para acumular mensajes antes de enviar (optimización de throughput)
+    message_buffers = {
+        "transactions": [],
+        "transaction_items": [],
+        "users": [],
+        "stores": [],
+        "menu_items": []
+    }
+    # Control de tiempo para flush periódico
+    last_flush_time = {
+        "transactions": time.time(),
+        "transaction_items": time.time(),
+        "users": time.time(),
+        "stores": time.time(),
+        "menu_items": time.time()
+    }
+    # Aumentado a 50 para reducir significativamente la presión en RabbitMQ
+    # Con batches de 100 registros, esto acumula ~5000 registros antes de enviar
+    FLUSH_THRESHOLD = 50  
+    MAX_BUFFER_SIZE = 100  # Si algún buffer llega a este tamaño, hacer flush inmediato
+    FLUSH_INTERVAL = 5.0  # Hacer flush cada 5 segundos incluso si no se alcanza el threshold
+    
     # Extraer configuración de escalado
     config = mq_map.get("_config", {})
     num_filter_year_workers = config.get("num_filter_year_workers", 1)
@@ -378,7 +427,7 @@ def handle_client(conn, addr, mq_map):
     
     try:
         while True:
-            data = conn.recv(4096)  # Buffer más grande para datos binarios
+            data = conn.recv(65536)  # Buffer de 64KB (optimización de throughput)
             if not data:
                 break
 
@@ -405,7 +454,7 @@ def handle_client(conn, addr, mq_map):
                             print(f"[GATEWAY] Sesión {session_id}: Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
                             print(f"[GATEWAY] Sesión {session_id}: Total procesado hasta ahora: {session.total_processed} registros")
 
-                        # Serializar y enviar al middleware con ID de sesión
+                        # Serializar mensaje
                         msg = serialize_message(
                             processed_items,
                             stream_id=f"session_{session_id}",
@@ -415,47 +464,20 @@ def handle_client(conn, addr, mq_map):
                             session_id=session_id
                         )
                         
-                        # Usar wrapper escalable si existe, sino usar mq_map directamente
-                        if entity_type in scalable_exchanges:
-                            # Enviar con round-robin para exchanges escalables
-                            try:
-                                scalable_exchanges[entity_type].send(msg, is_eos=False)
-                            except Exception as e:
-                                print(f"[GATEWAY] Sesión {session_id}: Error enviando al middleware ({entity_type}): {e}")
-                        else:
-                            # Envío normal para colas/exchanges no escalables (usando conexiones del thread)
-                            target_mq = thread_mq_map.get(entity_type)
-                            if not target_mq:
-                                print(f"[GATEWAY] No hay cola configurada para tipo {entity_type}, descartando batch")
-                            else:
-                                try:
-                                    # Usar conexión propia del thread (thread-safe por diseño)
-                                    target_mq.send(msg)
-                                except Exception as e:
-                                    print(f"[GATEWAY] Error enviando al middleware ({entity_type}): {e}")
-                                    # Si es error de conexión, intentar reconectar
-                                    if "conexión" in str(e).lower() or "connection" in str(e).lower():
-                                        print(f"[GATEWAY] Intentando reconectar {entity_type}...")
-                                        try:
-                                            # Recrear la conexión en el thread
-                                            if entity_type == "stores":
-                                                thread_mq_map[entity_type] = MessageMiddlewareExchange(
-                                                    host=RABBITMQ_HOST, 
-                                                    exchange_name="stores_raw",
-                                                    route_keys=["q3", "q4"]
-                                                )
-                                            else:
-                                                thread_mq_map[entity_type] = MessageMiddlewareQueue(
-                                                    host=RABBITMQ_HOST, 
-                                                    queue_name=f"{entity_type}_raw"
-                                                )
-                                            print(f"[GATEWAY] Reconectado {entity_type}, reintentando envío...")
-                                            target_mq = thread_mq_map[entity_type]
-                                            target_mq.send(msg)
-                                            print(f"[GATEWAY] Reenvío exitoso para {entity_type}")
-                                        except Exception as retry_e:
-                                            print(f"[GATEWAY] Error en reconexión de {entity_type}: {retry_e}")
-                                            # Continuar sin este mensaje
+                        # OPTIMIZACIÓN: Acumular en buffer en lugar de enviar inmediatamente
+                        message_buffers[entity_type].append(msg)
+                        
+                        # Flush cuando:
+                        # 1. Alcanzamos el threshold
+                        # 2. Hay riesgo de overflow
+                        # 3. Ha pasado mucho tiempo desde el último flush
+                        buffer_size = len(message_buffers[entity_type])
+                        time_since_flush = time.time() - last_flush_time[entity_type]
+                        
+                        if buffer_size >= FLUSH_THRESHOLD or buffer_size >= MAX_BUFFER_SIZE or time_since_flush >= FLUSH_INTERVAL:
+                            flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
+                                               thread_mq_map, scalable_exchanges)
+                            last_flush_time[entity_type] = time.time()
 
                 except ValueError as e:
                     # Si faltan datos del batch, esperar más datos sin limpiar el buffer
@@ -477,6 +499,15 @@ def handle_client(conn, addr, mq_map):
     finally:
         # Marcar sesión como inactiva
         session.is_active = False
+        
+        # IMPORTANTE: Hacer flush de todos los buffers pendientes antes de EOS
+        print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes...")
+        for entity_type in ["transactions", "transaction_items", "users", "stores", "menu_items"]:
+            if message_buffers[entity_type]:
+                buffer_size = len(message_buffers[entity_type])
+                flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
+                                   thread_mq_map, scalable_exchanges)
+                print(f"[GATEWAY] Sesión {session_id}: Flush final de {entity_type} ({buffer_size} mensajes)")
         
         print(f"[GATEWAY] Sesión {session_id}: Enviando EOS a workers...")
         

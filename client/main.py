@@ -61,6 +61,44 @@ def load_config(config_path="config.ini"):
         'log_format': config.get('LOGGING', 'log_format', fallback='%(asctime)s - %(levelname)s - %(message)s')
     }
 
+def smart_sort_csv_files(csv_files: List[str]) -> List[str]:
+    """
+    Ordena los archivos CSV para optimizar el procesamiento de queries.
+    
+    Orden óptimo basado en dependencias:
+    - Query 1: transactions
+    - Query 2: transaction_items + menu_items
+    - Query 3: transaction_items + stores
+    - Query 4: transactions + users + stores
+    
+    Estrategia: Enviar primero metadata pequeña, luego transactions para que
+    Query 1 y 4 empiecen inmediatamente, finalmente transaction_items.
+    """
+    priority_order = [
+        'menu_items',        # 1. Pequeño, necesario para Q2
+        'stores',            # 2. Pequeño, necesario para Q3 y Q4
+        'users',             # 3. Pequeño, necesario para Q4
+        'transactions',      # 4. Grande, pero Q1 y Q4 NECESITAN empezar YA
+        'transaction_items'  # 5. El más grande, pero Q2 y Q3 ya tienen metadata
+    ]
+    
+    def get_priority(filepath):
+        basename = os.path.basename(filepath).lower()
+        for i, keyword in enumerate(priority_order):
+            if keyword in basename:
+                return i
+        # Si no coincide con ningún patrón conocido, poner al final
+        return 999
+    
+    sorted_files = sorted(csv_files, key=get_priority)
+    
+    if VERBOSE:
+        print("\n📋 Orden de envío optimizado:")
+        for i, f in enumerate(sorted_files, 1):
+            print(f"  {i}. {os.path.basename(f)}")
+    
+    return sorted_files
+
 def find_csv_files_in_data_structure(data_path: str) -> List[str]:
     """
     Encuentra todos los archivos CSV en la estructura de datos de .data/
@@ -87,8 +125,8 @@ def find_csv_files_in_data_structure(data_path: str) -> List[str]:
     if not csv_files:
         raise ValueError(f"No se encontraron archivos CSV en {data_path}")
     
-    # Ordenar para procesamiento consistente
-    return sorted(csv_files)
+    # Ordenar con algoritmo inteligente basado en dependencias de queries
+    return smart_sort_csv_files(csv_files)
 
 def find_csv_files(dataset_path):
     """
@@ -105,11 +143,11 @@ def find_csv_files(dataset_path):
         if dataset_path.endswith('.data') or '.data' in dataset_path:
             return find_csv_files_in_data_structure(dataset_path)
         else:
-            # Comportamiento original para otros directorios
+            # Para otros directorios, también usar ordenamiento inteligente
             csv_files = glob.glob(os.path.join(dataset_path, "*.csv"))
             if not csv_files:
                 raise ValueError(f"No se encontraron archivos CSV en el directorio {dataset_path}")
-            return sorted(csv_files)
+            return smart_sort_csv_files(csv_files)
     else:
         raise ValueError(f"La ruta {dataset_path} no existe o no es válida")
 
