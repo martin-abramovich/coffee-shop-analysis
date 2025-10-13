@@ -355,6 +355,9 @@ services:
       - ./.data:/app/.data:ro # Montar datos como solo lectura
     profiles:
       - manual # No se inicia automáticamente
+    # Ejemplo de uso:
+    # docker-compose run --rm client --data-folder dataset1
+    # docker-compose run --rm client --data-folder dataset2 --verbose
 
 networks:
   coffee-network:

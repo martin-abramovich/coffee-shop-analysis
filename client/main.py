@@ -36,7 +36,7 @@ def setup_signal_handlers():
     if VERBOSE:
         print("🛡️  Manejadores de señales configurados (SIGTERM, SIGINT)")
 
-def load_config(config_path="config.ini"):
+def load_config(config_path="config.ini", data_subfolder=None):
     """
     Carga la configuración desde el archivo config.ini
     """
@@ -51,8 +51,17 @@ def load_config(config_path="config.ini"):
     if 'CLIENT' not in config:
         raise ValueError("Sección [CLIENT] no encontrada en el archivo de configuración")
     
+    # Construir la ruta del dataset
+    base_dataset_path = config.get('CLIENT', 'dataset_path', fallback='./datasets/')
+    if data_subfolder:
+        # Si se especifica una subcarpeta, usarla
+        dataset_path = os.path.join(base_dataset_path, data_subfolder)
+    else:
+        # Usar la ruta base (comportamiento original)
+        dataset_path = base_dataset_path
+    
     return {
-        'dataset_path': config.get('CLIENT', 'dataset_path', fallback='./datasets/'),
+        'dataset_path': dataset_path,
         'host': config.get('CLIENT', 'host', fallback='localhost'),
         'port': config.getint('CLIENT', 'port', fallback=9000),
         'batch_size': config.getint('CLIENT', 'batch_size', fallback=100),
@@ -325,12 +334,29 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
 
 def main():
     global global_client
+    
+    # Parsear argumentos de línea de comandos
+    import argparse
+    parser = argparse.ArgumentParser(description='Cliente para análisis de coffee shop')
+    parser.add_argument('--data-folder', '-d', 
+                       help='Subcarpeta dentro de .data de donde leer los archivos (ej: dataset1, dataset2)')
+    parser.add_argument('--config', '-c', default='config.ini',
+                       help='Archivo de configuración (default: config.ini)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Activar modo verbose')
+    
+    args = parser.parse_args()
+    
+    # Configurar verbose global
+    global VERBOSE
+    VERBOSE = args.verbose or os.environ.get('CLIENT_VERBOSE', '0') == '1'
+    
     try:
         # Configurar manejadores de señales
         setup_signal_handlers()
         
         # Cargar configuración
-        config = load_config()
+        config = load_config(args.config, args.data_folder)
         
         dataset_path = config['dataset_path']
         host = config['host']
