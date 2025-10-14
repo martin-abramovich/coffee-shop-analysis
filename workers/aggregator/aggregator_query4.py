@@ -53,6 +53,7 @@ class AggregatorQuery4:
     def __init__(self):
         # Datos por sesión: {session_id: session_data}
         self.session_data = {}
+        self.max_combinations_per_session = 200000  # Límite de seguridad
     
     def initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
@@ -149,6 +150,11 @@ class AggregatorQuery4:
                 continue
             key = (normalized_store_id, normalized_user_id)
             
+            # Control de memoria: evitar acumular demasiadas combinaciones
+            if len(session_data['store_user_transactions']) >= self.max_combinations_per_session:
+                print(f"[AggregatorQuery4] ⚠️ LÍMITE ALCANZADO: Sesión {session_id} ha alcanzado {self.max_combinations_per_session} combinaciones. Ignorando nuevas.")
+                continue
+            
             # Acumular conteo de transacciones para esta sesión
             session_data['store_user_transactions'][key] += transaction_count
             processed_count += 1
@@ -158,6 +164,10 @@ class AggregatorQuery4:
         # OPTIMIZACIÓN: Logs menos frecuentes para mejor performance
         if session_data['batches_received'] % 100 == 0 or session_data['batches_received'] <= 5:
             print(f"[AggregatorQuery4] Sesión {session_id}: Batch {session_data['batches_received']}: {processed_count}/{len(rows)} procesados; total combinaciones={len(session_data['store_user_transactions'])}")
+        
+        # Alerta si hay demasiadas combinaciones acumuladas
+        if len(session_data['store_user_transactions']) > 100000:
+            print(f"[AggregatorQuery4] ⚠️ ALERTA: Sesión {session_id} tiene {len(session_data['store_user_transactions'])} combinaciones acumuladas")
     
     def generate_final_results(self, session_id):
         """Genera los resultados finales para Query 4 con doble JOIN y TOP 3 para una sesión específica."""
@@ -403,23 +413,41 @@ def generate_and_send_results(session_id):
                 except Exception as e:
                     print(f"[AggregatorQuery4] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
                     if retry < max_retries - 1:
-                        # Reconectar
+                        # Crear conexión temporal para esta sesión
                         try:
-                            mq_out.close()
-                        except:
-                            pass
-                        print(f"[AggregatorQuery4] Reconectando exchange de salida...")
-                        mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+                            from middleware.middleware import MessageMiddlewareExchange
+                            temp_mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+                            temp_mq_out.send(result_msg)
+                            sent = True
+                            print(f"[AggregatorQuery4] Reconexión exitosa para sesión {session_id}")
+                            break
+                        except Exception as e2:
+                            print(f"[AggregatorQuery4] Error en reconexión para sesión {session_id}: {e2}")
+                            time.sleep(0.5)  # Pausa antes del siguiente intento
             
             if not sent:
-                print(f"[AggregatorQuery4] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
-                return
+                print(f"[AggregatorQuery4] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']} para sesión {session_id}")
+                # No hacer return, continuar con el siguiente batch
             
             # Log solo si hay pocos batches o cada 10
             if total_batches <= 5 or (i // batch_size + 1) % 10 == 0:
                 print(f"[AggregatorQuery4] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
     
     print(f"[AggregatorQuery4] ✅ Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
+    
+    # Programar limpieza de la sesión después de un delay
+    def delayed_cleanup():
+        time.sleep(120)  # Esperar 2 minutos antes de limpiar (query 4 es más compleja)
+        if session_id in aggregator.session_data:
+            del aggregator.session_data[session_id]
+            print(f"[AggregatorQuery4] Sesión {session_id} limpiada después de 120s")
+        # Limpiar también el contador EOS
+        with eos_lock:
+            if session_id in eos_count:
+                del eos_count[session_id]
+    
+    cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+    cleanup_thread.start()
 
 if __name__ == "__main__":
     import threading

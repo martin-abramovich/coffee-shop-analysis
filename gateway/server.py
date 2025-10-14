@@ -278,6 +278,62 @@ def flush_message_buffer(session_id, entity_type, message_buffer, thread_mq_map,
         # En caso de error, limpiar el buffer de todos modos para evitar acumulación
         message_buffer.clear()
 
+def check_and_send_eos_on_type_change(session_id, current_type, entity_types_seen, entity_types_eos_sent, 
+                                     message_buffers, thread_mq_map, scalable_exchanges):
+    """
+    Verifica si debemos enviar EOS para tipos anteriores cuando cambiamos a un nuevo tipo.
+    Solo se llama cuando detectamos un cambio real de tipo de entidad.
+    """
+    # Tipos que típicamente terminan temprano y no vuelven a aparecer
+    early_types = {"users", "menu_items", "stores"}
+    
+    # Enviar EOS según el orden esperado del cliente
+    # Orden: menu_items → stores → users → transactions → transaction_items
+    
+    if current_type == "stores":
+        # Cuando empezamos stores, menu_items ya terminó
+        if ("menu_items" in entity_types_seen and 
+            "menu_items" not in entity_types_eos_sent):
+            send_eos_for_type(session_id, "menu_items", message_buffers, thread_mq_map, scalable_exchanges, entity_types_eos_sent, f"cambio a {current_type}")
+    
+    elif current_type == "users":
+        # Cuando empezamos users, menu_items y stores ya terminaron
+        for entity_type in ["menu_items", "stores"]:
+            if (entity_type in entity_types_seen and 
+                entity_type not in entity_types_eos_sent):
+                send_eos_for_type(session_id, entity_type, message_buffers, thread_mq_map, scalable_exchanges, entity_types_eos_sent, f"cambio a {current_type}")
+    
+    elif current_type == "transactions":
+        # Cuando empezamos transactions, todos los tipos tempranos ya terminaron
+        for entity_type in early_types:
+            if (entity_type in entity_types_seen and 
+                entity_type not in entity_types_eos_sent):
+                send_eos_for_type(session_id, entity_type, message_buffers, thread_mq_map, scalable_exchanges, entity_types_eos_sent, f"cambio a {current_type}")
+    
+    elif current_type == "transaction_items":
+        # Cuando empezamos transaction_items, todos los tipos tempranos ya terminaron
+        for entity_type in early_types:
+            if (entity_type in entity_types_seen and 
+                entity_type not in entity_types_eos_sent):
+                send_eos_for_type(session_id, entity_type, message_buffers, thread_mq_map, scalable_exchanges, entity_types_eos_sent, f"cambio a {current_type}")
+
+def send_eos_for_type(session_id, entity_type, message_buffers, thread_mq_map, scalable_exchanges, entity_types_eos_sent, reason):
+    """Función auxiliar para enviar EOS de un tipo específico"""
+    # Hacer flush final si hay datos pendientes
+    if message_buffers[entity_type]:
+        try:
+            flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
+                               thread_mq_map, scalable_exchanges)
+            print(f"[GATEWAY] Sesión {session_id}: Flush automático de {entity_type} antes de EOS")
+        except Exception as e:
+            print(f"[GATEWAY] Sesión {session_id}: Error en flush automático de {entity_type}: {e}")
+    
+    # Enviar EOS
+    if entity_type in thread_mq_map:
+        send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
+        entity_types_eos_sent.add(entity_type)
+        print(f"[GATEWAY] Sesión {session_id}: 🎯 EOS automático enviado para {entity_type} ({reason})")
+
 def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges):
     """
     Envía EOS a un worker específico tan pronto como termina de procesar ese tipo de entidad.
@@ -293,17 +349,62 @@ def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_e
         session_id=session_id
     )
     
-    try:
-        # Usar wrapper escalable si existe para hacer broadcast de EOS
-        if entity_type in scalable_exchanges:
-            scalable_exchanges[entity_type].send(eos_msg, is_eos=True)
-            print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a workers de {entity_type}")
-        else:
-            # Usar conexión del thread (thread-safe por diseño, sin lock necesario)
-            thread_mq_map[entity_type].send(eos_msg)
-            print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a {entity_type}")
-    except Exception as e:
-        print(f"[GATEWAY] Sesión {session_id}: ❌ Error enviando EOS a {entity_type}: {e}")
+    max_retries = 3
+    for retry in range(max_retries):
+        try:
+            # Usar wrapper escalable si existe para hacer broadcast de EOS
+            if entity_type in scalable_exchanges:
+                scalable_exchanges[entity_type].send(eos_msg, is_eos=True)
+                print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a workers de {entity_type}")
+            else:
+                # Usar conexión del thread (thread-safe por diseño, sin lock necesario)
+                thread_mq_map[entity_type].send(eos_msg)
+                print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a {entity_type}")
+            return  # Éxito, salir del bucle
+            
+        except Exception as e:
+            print(f"[GATEWAY] Sesión {session_id}: ❌ Error enviando EOS a {entity_type} (intento {retry+1}/{max_retries}): {e}")
+            
+            if retry < max_retries - 1:  # No es el último intento
+                try:
+                    # Recrear conexión si el canal se cerró
+                    print(f"[GATEWAY] Sesión {session_id}: Recreando conexión para {entity_type}...")
+                    
+                    # Cerrar conexión anterior
+                    if entity_type in thread_mq_map:
+                        try:
+                            thread_mq_map[entity_type].close()
+                        except:
+                            pass
+                    
+                    # Recrear conexión según el tipo
+                    if entity_type == "users":
+                        from middleware.middleware import MessageMiddlewareQueue
+                        thread_mq_map[entity_type] = MessageMiddlewareQueue(
+                            host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'),
+                            queue_name="users_raw"
+                        )
+                    elif entity_type == "menu_items":
+                        from middleware.middleware import MessageMiddlewareQueue
+                        thread_mq_map[entity_type] = MessageMiddlewareQueue(
+                            host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'),
+                            queue_name="menu_items_raw"
+                        )
+                    elif entity_type == "stores":
+                        from middleware.middleware import MessageMiddlewareExchange
+                        thread_mq_map[entity_type] = MessageMiddlewareExchange(
+                            host=os.environ.get('RABBITMQ_HOST', 'rabbitmq'),
+                            exchange_name="stores_raw",
+                            route_keys=["q3", "q4"]
+                        )
+                    
+                    print(f"[GATEWAY] Sesión {session_id}: Conexión recreada para {entity_type}")
+                    time.sleep(0.5)  # Breve pausa antes del siguiente intento
+                    
+                except Exception as recreate_error:
+                    print(f"[GATEWAY] Sesión {session_id}: Error recreando conexión para {entity_type}: {recreate_error}")
+            else:
+                print(f"[GATEWAY] Sesión {session_id}: ❌ CRITICO: No se pudo enviar EOS a {entity_type} después de {max_retries} intentos")
 
 
 # Control global de sesiones activas
@@ -345,6 +446,11 @@ def handle_client(conn, addr, mq_map):
     
     buffer = b""
     batch_id = 0
+    
+    # Control para saber qué tipos de entidad hemos visto y cuáles han terminado
+    entity_types_seen = set()
+    entity_types_eos_sent = set()
+    last_entity_type = None  # Para detectar cambios de tipo
     
     # Buffers para acumular mensajes antes de enviar (optimización de throughput)
     message_buffers = {
@@ -407,10 +513,18 @@ def handle_client(conn, addr, mq_map):
             route_keys=["q3", "q4"]
         )
         
+        print(f"[GATEWAY] Sesión {session_id}: Conexiones RabbitMQ creadas exitosamente")
+        
         log_with_timestamp(f"[GATEWAY] Sesión {session_id}: Conexiones RabbitMQ creadas para este thread")
         
     except Exception as e:
-        log_with_timestamp(f"[GATEWAY] Sesión {session_id}: Error creando conexiones: {e}")
+        print(f"[GATEWAY] Error creando conexiones para sesión {session_id}: {e}")
+        # Cerrar conexiones parcialmente creadas
+        for entity_type, mq in thread_mq_map.items():
+            try:
+                mq.close()
+            except:
+                pass
         conn.close()
         return
     
@@ -446,6 +560,17 @@ def handle_client(conn, addr, mq_map):
                     batch_id += 1
                     session.batch_count += 1
                     processed_items = process_batch_by_type(items, entity_type)
+                    
+                    # Registrar que hemos visto este tipo de entidad
+                    entity_types_seen.add(entity_type)
+                    
+                    # Detectar cambio de tipo y enviar EOS de tipos anteriores si es necesario
+                    if last_entity_type and last_entity_type != entity_type:
+                        check_and_send_eos_on_type_change(session_id, entity_type, entity_types_seen, 
+                                                         entity_types_eos_sent, message_buffers, 
+                                                         thread_mq_map, scalable_exchanges)
+                    
+                    last_entity_type = entity_type
                     
                     if processed_items:
                         session.total_processed += len(processed_items)
@@ -483,7 +608,7 @@ def handle_client(conn, addr, mq_map):
                     # Si faltan datos del batch, esperar más datos sin limpiar el buffer
                     msg = str(e)
                     if "Datos insuficientes" in msg:
-                        break
+                        break  # Simplemente esperar más datos
                     else:
                         print(f"[GATEWAY] Error procesando batch: {e}")
                         buffer = b""
@@ -494,27 +619,52 @@ def handle_client(conn, addr, mq_map):
                     buffer = b""
                     break
 
+        # Al final del bucle principal, enviar EOS final para tipos tempranos si no se enviaron
+        early_types = {"users", "menu_items", "stores"}
+        for entity_type in early_types:
+            if (entity_type in entity_types_seen and 
+                entity_type not in entity_types_eos_sent):
+                
+                if message_buffers[entity_type]:
+                    try:
+                        flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
+                                           thread_mq_map, scalable_exchanges)
+                        print(f"[GATEWAY] Sesión {session_id}: Flush final de {entity_type}")
+                    except Exception as e:
+                        print(f"[GATEWAY] Sesión {session_id}: Error en flush final de {entity_type}: {e}")
+                
+                if entity_type in thread_mq_map:
+                    send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
+                    entity_types_eos_sent.add(entity_type)
+                    print(f"[GATEWAY] Sesión {session_id}: 🎯 EOS final enviado para {entity_type}")
+        
     except Exception as e:
         print(f"[GATEWAY] Sesión {session_id}: Error en conexión con {addr}: {e}")
     finally:
         # Marcar sesión como inactiva
         session.is_active = False
         
-        # IMPORTANTE: Hacer flush de todos los buffers pendientes antes de EOS
-        print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes...")
-        for entity_type in ["transactions", "transaction_items", "users", "stores", "menu_items"]:
-            if message_buffers[entity_type]:
-                buffer_size = len(message_buffers[entity_type])
-                flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
-                                   thread_mq_map, scalable_exchanges)
-                print(f"[GATEWAY] Sesión {session_id}: Flush final de {entity_type} ({buffer_size} mensajes)")
+        # IMPORTANTE: Hacer flush de todos los buffers pendientes y enviar EOS inmediatos
+        print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes y EOS finales...")
         
-        print(f"[GATEWAY] Sesión {session_id}: Enviando EOS a workers...")
-        
-        # Enviar EOS a cada tipo de worker que procesamos
-        for entity_type in ["transactions", "transaction_items", "users", "stores", "menu_items"]:
-            if entity_type in thread_mq_map:
-                send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
+        # Para cada tipo que vimos, hacer flush final y enviar EOS inmediatamente
+        for entity_type in entity_types_seen:
+            if entity_type not in entity_types_eos_sent:  # Solo si no enviamos EOS ya
+                # Flush final
+                if message_buffers[entity_type]:
+                    buffer_size = len(message_buffers[entity_type])
+                    try:
+                        flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
+                                           thread_mq_map, scalable_exchanges)
+                        print(f"[GATEWAY] Sesión {session_id}: Flush final de {entity_type} ({buffer_size} mensajes)")
+                    except Exception as e:
+                        print(f"[GATEWAY] Sesión {session_id}: Error en flush de {entity_type}: {e}")
+                
+                # Enviar EOS inmediatamente después del flush
+                if entity_type in thread_mq_map:
+                    send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
+                    entity_types_eos_sent.add(entity_type)
+                    print(f"[GATEWAY] Sesión {session_id}: ✅ EOS final enviado para {entity_type}")
         
         
         # Enviar ACK final al cliente (4 bytes longitud + payload UTF-8)
@@ -530,6 +680,7 @@ def handle_client(conn, addr, mq_map):
         for entity_type, mq in thread_mq_map.items():
             try:
                 mq.close()
+                print(f"[GATEWAY] Sesión {session_id}: Conexión {entity_type} cerrada")
             except Exception as e:
                 print(f"[GATEWAY] Sesión {session_id}: Error cerrando {entity_type}: {e}")
         
