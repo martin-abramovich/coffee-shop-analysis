@@ -29,13 +29,13 @@ ROUTING_KEY = "query1_results"            # routing para resultados
 class AggregatorQuery1:
     def __init__(self):
         # Acumulador de transacciones válidas por sesión
-        self.session_data = {}  # {session_id: {'transactions': [], 'total_received': 0}}
+        self.session_data = {}  # {session_id: {'transactions': [], 'total_received': 0, 'results_sent': False}}
         self.total_received = 0
         
     def accumulate_transactions(self, rows, session_id):
         """Acumula transacciones que pasaron todos los filtros para una sesión específica."""
         if session_id not in self.session_data:
-            self.session_data[session_id] = {'transactions': [], 'total_received': 0}
+            self.session_data[session_id] = {'transactions': [], 'total_received': 0, 'results_sent': False}
         
         session_info = self.session_data[session_id]
         
@@ -108,7 +108,6 @@ class AggregatorQuery1:
 
 # Instancia global del agregador
 aggregator = AggregatorQuery1()
-results_sent = {}  # {session_id: True} - Flags para evitar procesamiento duplicado de EOS por sesión
 
 if __name__ == "__main__":
     import threading
@@ -133,7 +132,7 @@ if __name__ == "__main__":
     eos_counter = EOSCounter()
     
     def enhanced_on_message(body):
-        global results_sent
+        global aggregator
         header, rows = deserialize_message(body)
         session_id = header.get("session_id", "unknown")
         
@@ -147,13 +146,16 @@ if __name__ == "__main__":
                 print(f"[AggregatorQuery1] Esperando más EOS para sesión {session_id}...")
                 return
             
-            # Prevenir procesamiento duplicado
-            if session_id in results_sent:
+            # Prevenir procesamiento duplicado usando session_data
+            if session_id not in aggregator.session_data:
+                aggregator.session_data[session_id] = {'transactions': [], 'total_received': 0, 'results_sent': False}
+            
+            if aggregator.session_data[session_id].get('results_sent', False):
                 print(f"[AggregatorQuery1] ⚠️ EOS duplicado ignorado para sesión {session_id} (resultados ya enviados)")
                 return
             
             log_with_timestamp(f"[AggregatorQuery1] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Generando resultados finales...")
-            results_sent[session_id] = True
+            aggregator.session_data[session_id]['results_sent'] = True
             
             # Generar resultados finales para esta sesión
             final_results = aggregator.generate_final_results(session_id)
@@ -186,7 +188,7 @@ if __name__ == "__main__":
                     
                     result_msg = serialize_message(batch, batch_header)
                     
-                    # Intentar enviar con reconexión automática si falla
+                    # Intentar enviar con manejo de errores por sesión
                     max_retries = 3
                     sent = False
                     for retry in range(max_retries):
@@ -195,17 +197,22 @@ if __name__ == "__main__":
                             sent = True
                             # Log cada 100 batches para no saturar
                             if (i // batch_size + 1) % 100 == 0 or (i // batch_size + 1) == total_batches:
-                                print(f"[AggregatorQuery1] Progreso: batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+                                print(f"[AggregatorQuery1] Progreso sesión {session_id}: batch {batch_header['batch_number']}/{batch_header['total_batches']}")
                             break
                         except Exception as e:
-                            print(f"[AggregatorQuery1] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
+                            print(f"[AggregatorQuery1] Error enviando batch {batch_header['batch_number']} para sesión {session_id} (intento {retry+1}/{max_retries}): {e}")
                             if retry < max_retries - 1:
+                                # Crear nueva conexión específica para esta sesión en caso de error
                                 try:
-                                    mq_out.close()
-                                except:
-                                    pass
-                                from middleware.middleware import MessageMiddlewareExchange
-                                mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+                                    from middleware.middleware import MessageMiddlewareExchange
+                                    temp_mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+                                    temp_mq_out.send(result_msg)
+                                    sent = True
+                                    print(f"[AggregatorQuery1] Reconexión exitosa para sesión {session_id}")
+                                    break
+                                except Exception as e2:
+                                    print(f"[AggregatorQuery1] Error en reconexión para sesión {session_id}: {e2}")
+                                    time.sleep(0.1)  # Breve pausa antes del siguiente intento
                     
                     if not sent:
                         print(f"[AggregatorQuery1] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
@@ -219,20 +226,18 @@ if __name__ == "__main__":
                 eos_received[session_id] = threading.Event()
             eos_received[session_id].set()
             
-            # Programar limpieza de la sesión después de un delay
+            # Programar limpieza de la sesión después de un delay más largo para múltiples clientes
             def delayed_cleanup():
-                time.sleep(30)  # Esperar 30 segundos antes de limpiar
+                time.sleep(60)  # Esperar 60 segundos antes de limpiar (más tiempo para múltiples clientes)
                 with eos_counter.lock:
                     if session_id in eos_counter.session_counts:
                         del eos_counter.session_counts[session_id]
                 if session_id in eos_received:
                     del eos_received[session_id]
-                if session_id in results_sent:
-                    del results_sent[session_id]
                 # Limpiar datos de la sesión del agregador
                 if session_id in aggregator.session_data:
                     del aggregator.session_data[session_id]
-                print(f"[AggregatorQuery1] Sesión {session_id} limpiada")
+                print(f"[AggregatorQuery1] Sesión {session_id} limpiada después de 60s")
             
             cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
             cleanup_thread.start()
