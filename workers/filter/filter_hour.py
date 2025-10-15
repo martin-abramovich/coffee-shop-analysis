@@ -159,9 +159,8 @@ def on_message(body, source_exchange):
                         mq_outputs_scalable[exchange_name].send_eos(eos_msg)
                         print(f"[FilterHour Worker {WORKER_ID}] EOS broadcast a {exchange_name}")
                 
-                # Programar limpieza de la sesión después de un delay
+                # Programar limpieza de la sesión
                 def delayed_cleanup():
-                    time.sleep(10)  # Esperar 10 segundos antes de limpiar
                     with eos_lock:
                         if session_id in eos_count_per_session:
                             del eos_count_per_session[session_id]

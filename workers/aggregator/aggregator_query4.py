@@ -423,7 +423,7 @@ def generate_and_send_results(session_id):
                             break
                         except Exception as e2:
                             print(f"[AggregatorQuery4] Error en reconexión para sesión {session_id}: {e2}")
-                            time.sleep(0.5)  # Pausa antes del siguiente intento
+                            pass  # Continuar con el siguiente intento
             
             if not sent:
                 print(f"[AggregatorQuery4] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']} para sesión {session_id}")
@@ -437,7 +437,6 @@ def generate_and_send_results(session_id):
     
     # Programar limpieza de la sesión después de un delay
     def delayed_cleanup():
-        time.sleep(120)  # Esperar 2 minutos antes de limpiar (query 4 es más compleja)
         if session_id in aggregator.session_data:
             del aggregator.session_data[session_id]
             print(f"[AggregatorQuery4] Sesión {session_id} limpiada después de 120s")

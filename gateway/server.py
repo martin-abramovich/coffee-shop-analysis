@@ -399,7 +399,6 @@ def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_e
                         )
                     
                     print(f"[GATEWAY] Sesión {session_id}: Conexión recreada para {entity_type}")
-                    time.sleep(0.5)  # Breve pausa antes del siguiente intento
                     
                 except Exception as recreate_error:
                     print(f"[GATEWAY] Sesión {session_id}: Error recreando conexión para {entity_type}: {recreate_error}")

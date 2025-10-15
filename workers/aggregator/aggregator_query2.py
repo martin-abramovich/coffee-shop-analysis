@@ -367,7 +367,6 @@ def generate_and_send_results(session_id):
     
     # Limpiar datos de la sesión completada después de un delay
     def delayed_cleanup():
-        time.sleep(10)  # Esperar 10 segundos antes de limpiar
         if session_id in aggregator.session_data:
             del aggregator.session_data[session_id]
             print(f"[AggregatorQuery2] Sesión {session_id} limpiada de memoria")

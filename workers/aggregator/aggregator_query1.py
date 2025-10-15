@@ -212,7 +212,7 @@ if __name__ == "__main__":
                                     break
                                 except Exception as e2:
                                     print(f"[AggregatorQuery1] Error en reconexión para sesión {session_id}: {e2}")
-                                    time.sleep(0.1)  # Breve pausa antes del siguiente intento
+                                    pass  # Continuar con el siguiente intento
                     
                     if not sent:
                         print(f"[AggregatorQuery1] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
@@ -228,7 +228,6 @@ if __name__ == "__main__":
             
             # Programar limpieza de la sesión después de un delay más largo para múltiples clientes
             def delayed_cleanup():
-                time.sleep(60)  # Esperar 60 segundos antes de limpiar (más tiempo para múltiples clientes)
                 with eos_counter.lock:
                     if session_id in eos_counter.session_counts:
                         del eos_counter.session_counts[session_id]
