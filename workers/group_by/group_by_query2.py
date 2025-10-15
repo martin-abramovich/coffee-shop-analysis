@@ -94,26 +94,30 @@ def group_by_month_and_item(rows):
     
     return metrics
 
-# Control de EOS - necesitamos recibir EOS de todos los workers de filter_year
-eos_count = 0
+# Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
+eos_count = {}  # {session_id: count}
 eos_lock = threading.Lock()
 
 def on_message(body):
     global eos_count
     header, rows = deserialize_message(body)
+    session_id = header.get("session_id", "unknown")
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         with eos_lock:
-            eos_count += 1
-            print(f"[GroupByQuery2] EOS recibido ({eos_count}/{NUM_FILTER_YEAR_WORKERS})")
+            # Inicializar contador para esta sesión si no existe
+            if session_id not in eos_count:
+                eos_count[session_id] = 0
+            eos_count[session_id] += 1
+            print(f"[GroupByQuery2] EOS recibido para sesión {session_id} ({eos_count[session_id]}/{NUM_FILTER_YEAR_WORKERS})")
             
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year
-            if eos_count >= NUM_FILTER_YEAR_WORKERS:
-                print(f"[GroupByQuery2] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
-                eos_msg = serialize_message([], header)
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year para esta sesión
+            if eos_count[session_id] >= NUM_FILTER_YEAR_WORKERS:
+                print(f"[GroupByQuery2] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
+                eos_msg = serialize_message([], header)  # Mantiene session_id en header
                 mq_out.send(eos_msg)
-                print("[GroupByQuery2] EOS reenviado a workers downstream")
+                print(f"[GroupByQuery2] EOS reenviado para sesión {session_id}")
         return
     
     # Procesamiento normal
