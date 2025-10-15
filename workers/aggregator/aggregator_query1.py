@@ -53,8 +53,8 @@ class AggregatorQuery1:
         session_info['total_received'] += len(rows)
         self.total_received += len(rows)
         
-        # Log solo cada 1000 transacciones recibidas
-        if self.total_received % 1000 < len(rows):
+        # Log solo cada 10000 transacciones recibidas para reducir verbosidad
+        if self.total_received % 10000 < len(rows):
             total_accumulated = sum(len(data['transactions']) for data in self.session_data.values())
             print(f"[AggregatorQuery1] Total acumulado: {total_accumulated}/{self.total_received} (sesiones: {len(self.session_data)})")
     
@@ -85,19 +85,19 @@ class AggregatorQuery1:
                     'final_amount': float(txn['final_amount']) if isinstance(txn['final_amount'], str) else txn['final_amount']
                 }
                 results.append(result)
-            except (ValueError, TypeError) as e:
-                print(f"[AggregatorQuery1] Error procesando transacción {txn}: {e}")
+            except (ValueError, TypeError):
+                # Saltar transacciones con datos inválidos sin log
                 continue
         
         # Ordenar por transaction_id para consistencia
         results.sort(key=lambda x: x['transaction_id'])
         
-        print(f"[AggregatorQuery1] Resultados generados para sesión {session_id}: {len(results)} transacciones")
-        print(f"[AggregatorQuery1] Ejemplo de resultados:")
-        for i, result in enumerate(results[:5]):  # Mostrar solo los primeros 5
-            print(f"  {i+1}. TXN: {result['transaction_id']}, Monto: ${result['final_amount']:.2f}")
-        if len(results) > 5:
-            print(f"  ... y {len(results) - 5} más")
+        log_with_timestamp(f"[AggregatorQuery1] Resultados enviados para sesión {session_id}: {len(final_results)} transacciones")
+        # Solo mostrar ejemplo si hay pocos resultados
+        if len(results) <= 10:
+            print(f"[AggregatorQuery1] Ejemplo de resultados:")
+            for i, result in enumerate(results[:5]):
+                print(f"  {i+1}. TXN: {result['transaction_id']}, Monto: ${result['final_amount']:.2f}")
         
         # Estadísticas
         total_amount = sum(r['final_amount'] for r in results)
@@ -139,7 +139,7 @@ if __name__ == "__main__":
         # Verificar si es mensaje de End of Stream
         if header.get("is_eos") == "true":
             count = eos_counter.increment(session_id)
-            log_with_timestamp(f"[AggregatorQuery1] 🔚 EOS recibido para sesión {session_id} ({count}/{NUM_FILTER_AMOUNT_WORKERS})")
+            log_with_timestamp(f"[AggregatorQuery1] EOS recibido para sesión {session_id} ({count}/{NUM_FILTER_AMOUNT_WORKERS})")
             
             # Solo procesar cuando recibimos de TODOS los workers para esta sesión
             if count < NUM_FILTER_AMOUNT_WORKERS:
@@ -151,10 +151,10 @@ if __name__ == "__main__":
                 aggregator.session_data[session_id] = {'transactions': [], 'total_received': 0, 'results_sent': False}
             
             if aggregator.session_data[session_id].get('results_sent', False):
-                print(f"[AggregatorQuery1] ⚠️ EOS duplicado ignorado para sesión {session_id} (resultados ya enviados)")
+                print(f"[AggregatorQuery1] EOS duplicado ignorado para sesión {session_id} (resultados ya enviados)")
                 return
             
-            log_with_timestamp(f"[AggregatorQuery1] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Generando resultados finales...")
+            log_with_timestamp(f"[AggregatorQuery1] EOS recibido de TODOS los workers para sesión {session_id}. Generando resultados finales...")
             aggregator.session_data[session_id]['results_sent'] = True
             
             # Generar resultados finales para esta sesión
@@ -219,7 +219,7 @@ if __name__ == "__main__":
                 
                 print(f"[AggregatorQuery1] Envío completado para sesión {session_id}: {total_batches} batches, {len(final_results)} transacciones")
             
-            print(f"[AggregatorQuery1] 🎉 Resultados finales enviados para sesión {session_id}.")
+            print(f"[AggregatorQuery1] Resultados finales enviados para sesión {session_id}.")
             
             # Marcar EOS recibido para esta sesión
             if session_id not in eos_received:
@@ -265,7 +265,7 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery1 esperando mensajes...")
     print("[*] Query 1: Transacciones 2024-2025, 06:00-23:00, monto >= 75")
     print("[*] Columnas output: transaction_id, final_amount")
-    print("[*] 🎯 Esperará hasta recibir EOS para generar reporte")
+    print("[*] Esperará hasta recibir EOS para generar reporte")
     
     try:
         def consume_messages():
@@ -273,7 +273,7 @@ if __name__ == "__main__":
                 mq_in.start_consuming(enhanced_on_message)
             except Exception as e:
                 if not shutdown_event.is_set():
-                    print(f"[AggregatorQuery1] ❌ Error consumiendo: {e}")
+                    print(f"[AggregatorQuery1] Error consumiendo: {e}")
         
         # Iniciar consumo en thread separado
         consumer_thread = threading.Thread(target=consume_messages)
@@ -282,14 +282,14 @@ if __name__ == "__main__":
         
         # Esperar indefinidamente - el worker NO termina después de EOS
         # Solo termina por señal externa (SIGTERM, SIGINT)
-        print("[AggregatorQuery1] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
-        print("[AggregatorQuery1] 💡 El worker continuará procesando múltiples clientes")
+        log_with_timestamp(f"[AggregatorQuery1] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery1] El worker continuará procesando múltiples clientes")
         
         # Loop principal - solo termina por señal
         while not shutdown_event.is_set():
             time.sleep(1)
         
-        print("[AggregatorQuery1] ✅ Terminando por señal externa")
+        print("[AggregatorQuery1] Terminando por señal externa")
             
     except KeyboardInterrupt:
         print("\n[AggregatorQuery1] Interrupción recibida")

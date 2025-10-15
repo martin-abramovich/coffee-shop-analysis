@@ -332,7 +332,7 @@ def send_eos_for_type(session_id, entity_type, message_buffers, thread_mq_map, s
     if entity_type in thread_mq_map:
         send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
         entity_types_eos_sent.add(entity_type)
-        print(f"[GATEWAY] Sesión {session_id}: 🎯 EOS automático enviado para {entity_type} ({reason})")
+        print(f"[GATEWAY] Sesión {session_id}: EOS automático enviado para {entity_type} ({reason})")
 
 def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges):
     """
@@ -355,15 +355,15 @@ def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_e
             # Usar wrapper escalable si existe para hacer broadcast de EOS
             if entity_type in scalable_exchanges:
                 scalable_exchanges[entity_type].send(eos_msg, is_eos=True)
-                print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a workers de {entity_type}")
+                print(f"[GATEWAY] Sesión {session_id}: EOS enviado a workers de {entity_type}")
             else:
                 # Usar conexión del thread (thread-safe por diseño, sin lock necesario)
                 thread_mq_map[entity_type].send(eos_msg)
-                print(f"[GATEWAY] Sesión {session_id}: ✅ EOS enviado a {entity_type}")
+                print(f"[GATEWAY] Sesión {session_id}: EOS enviado a {entity_type}")
             return  # Éxito, salir del bucle
             
         except Exception as e:
-            print(f"[GATEWAY] Sesión {session_id}: ❌ Error enviando EOS a {entity_type} (intento {retry+1}/{max_retries}): {e}")
+            print(f"[GATEWAY] Sesión {session_id}: Error enviando EOS a {entity_type} (intento {retry+1}/{max_retries}): {e}")
             
             if retry < max_retries - 1:  # No es el último intento
                 try:
@@ -404,7 +404,7 @@ def send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_e
                 except Exception as recreate_error:
                     print(f"[GATEWAY] Sesión {session_id}: Error recreando conexión para {entity_type}: {recreate_error}")
             else:
-                print(f"[GATEWAY] Sesión {session_id}: ❌ CRITICO: No se pudo enviar EOS a {entity_type} después de {max_retries} intentos")
+                print(f"[GATEWAY] Sesión {session_id}: CRITICO: No se pudo enviar EOS a {entity_type} después de {max_retries} intentos")
 
 
 # Control global de sesiones activas
@@ -513,8 +513,6 @@ def handle_client(conn, addr, mq_map):
             route_keys=["q3", "q4"]
         )
         
-        print(f"[GATEWAY] Sesión {session_id}: Conexiones RabbitMQ creadas exitosamente")
-        
         log_with_timestamp(f"[GATEWAY] Sesión {session_id}: Conexiones RabbitMQ creadas para este thread")
         
     except Exception as e:
@@ -550,7 +548,7 @@ def handle_client(conn, addr, mq_map):
             # Procesar batches completos
             while len(buffer) >= 5:  # Mínimo: 4 bytes (cantidad) + 1 byte (tipo)
                 try:
-                    # Intentar parsear el batch y obtener el offset final real
+                    # parsear el batch y obtener el offset final real
                     entity_type, items, end_offset = parse_batch(buffer)
                     
                     # Remover el batch procesado del buffer exactamente
@@ -574,10 +572,9 @@ def handle_client(conn, addr, mq_map):
                     
                     if processed_items:
                         session.total_processed += len(processed_items)
-                        # Solo imprimir cada 1000 batches para reducir logs
-                        if batch_id % 1000 == 0:
-                            print(f"[GATEWAY] Sesión {session_id}: Batch {batch_id} de tipo {entity_type} procesado ({len(processed_items)} registros)")
-                            print(f"[GATEWAY] Sesión {session_id}: Total procesado hasta ahora: {session.total_processed} registros")
+                        # Solo imprimir cada 5000 batches para reducir logs
+                        if batch_id % 5000 == 0:
+                            print(f"[GATEWAY] Sesión {session_id}: Procesados {batch_id} batches, total registros: {session.total_processed}")
 
                         # Serializar mensaje
                         msg = serialize_message(
@@ -592,10 +589,6 @@ def handle_client(conn, addr, mq_map):
                         # OPTIMIZACIÓN: Acumular en buffer en lugar de enviar inmediatamente
                         message_buffers[entity_type].append(msg)
                         
-                        # Flush cuando:
-                        # 1. Alcanzamos el threshold
-                        # 2. Hay riesgo de overflow
-                        # 3. Ha pasado mucho tiempo desde el último flush
                         buffer_size = len(message_buffers[entity_type])
                         time_since_flush = time.time() - last_flush_time[entity_type]
                         
@@ -608,14 +601,13 @@ def handle_client(conn, addr, mq_map):
                     # Si faltan datos del batch, esperar más datos sin limpiar el buffer
                     msg = str(e)
                     if "Datos insuficientes" in msg:
-                        break  # Simplemente esperar más datos
+                        break
                     else:
                         print(f"[GATEWAY] Error procesando batch: {e}")
                         buffer = b""
                         break
                 except Exception as e:
                     print(f"[GATEWAY] Error procesando batch: {e}")
-                    # En caso de error, limpiar el buffer y continuar
                     buffer = b""
                     break
 
@@ -636,7 +628,7 @@ def handle_client(conn, addr, mq_map):
                 if entity_type in thread_mq_map:
                     send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
                     entity_types_eos_sent.add(entity_type)
-                    print(f"[GATEWAY] Sesión {session_id}: 🎯 EOS final enviado para {entity_type}")
+                    print(f"[GATEWAY] Sesión {session_id}: EOS final enviado para {entity_type}")
         
     except Exception as e:
         print(f"[GATEWAY] Sesión {session_id}: Error en conexión con {addr}: {e}")
@@ -644,7 +636,6 @@ def handle_client(conn, addr, mq_map):
         # Marcar sesión como inactiva
         session.is_active = False
         
-        # IMPORTANTE: Hacer flush de todos los buffers pendientes y enviar EOS inmediatos
         print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes y EOS finales...")
         
         # Para cada tipo que vimos, hacer flush final y enviar EOS inmediatamente
@@ -660,11 +651,10 @@ def handle_client(conn, addr, mq_map):
                     except Exception as e:
                         print(f"[GATEWAY] Sesión {session_id}: Error en flush de {entity_type}: {e}")
                 
-                # Enviar EOS inmediatamente después del flush
                 if entity_type in thread_mq_map:
                     send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
                     entity_types_eos_sent.add(entity_type)
-                    print(f"[GATEWAY] Sesión {session_id}: ✅ EOS final enviado para {entity_type}")
+                    print(f"[GATEWAY] Sesión {session_id}: EOS final enviado para {entity_type}")
         
         
         # Enviar ACK final al cliente (4 bytes longitud + payload UTF-8)

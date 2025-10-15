@@ -64,11 +64,11 @@ def on_message(body, source_exchange):
     if header.get("is_eos") == "true":
         with eos_lock:
             eos_count += 1
-            print(f"[FilterAmount] 🔚 EOS recibido ({eos_count}/{NUM_FILTER_HOUR_WORKERS})")
+            print(f"[FilterAmount] EOS recibido ({eos_count}/{NUM_FILTER_HOUR_WORKERS})")
             
             # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_hour
             if eos_count >= NUM_FILTER_HOUR_WORKERS:
-                print(f"[FilterAmount] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
+                print(f"[FilterAmount Worker {WORKER_ID}] EOS recibido de todas las fuentes para sesión {session_id}. Reenviando downstream...")
                 eos_msg = serialize_message([], header)
                 output_exchanges = OUTPUT_EXCHANGES[source_exchange]
                 for exchange_name in output_exchanges:

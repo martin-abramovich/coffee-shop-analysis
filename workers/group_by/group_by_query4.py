@@ -84,7 +84,7 @@ def on_message(body):
             
             # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year para esta sesión
             if eos_count[session_id] >= NUM_FILTER_YEAR_WORKERS:
-                print(f"[GroupByQuery4] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
+                print(f"[GroupByQuery4] EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
                 eos_msg = serialize_message([], header)  # Mantiene session_id en header
                 mq_out.send(eos_msg)
                 print(f"[GroupByQuery4] EOS reenviado para sesión {session_id}")

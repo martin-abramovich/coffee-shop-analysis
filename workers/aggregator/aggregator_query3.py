@@ -192,7 +192,7 @@ def on_tpv_message(body):
                 print(f"[AggregatorQuery3] Esperando más EOS para sesión {session_id}...")
                 return
             
-            print(f"[AggregatorQuery3] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
+            print(f"[AggregatorQuery3] EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
             session_data['eos_received'] = True
             session_data['eos_tpv_done'] = True
             
@@ -240,10 +240,10 @@ def generate_and_send_results(session_id):
     
     # Evitar procesamiento duplicado para esta sesión
     if session_data['results_sent']:
-        print(f"[AggregatorQuery3] ⚠️ Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
+        print(f"[AggregatorQuery3] Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
         return
     
-    print(f"[AggregatorQuery3] 🔚 Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
+    print(f"[AggregatorQuery3] Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
     
     # Marcar como enviado ANTES de generar para evitar race conditions
     session_data['results_sent'] = True
@@ -301,7 +301,7 @@ def generate_and_send_results(session_id):
             if not sent:
                 print(f"[AggregatorQuery3] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
     
-    print(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo.")
+    print(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
 
 if __name__ == "__main__":
     import threading
@@ -353,14 +353,14 @@ if __name__ == "__main__":
         
         # Esperar indefinidamente - el worker NO termina después de EOS
         # Solo termina por señal externa (SIGTERM, SIGINT)
-        print("[AggregatorQuery3] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
-        print("[AggregatorQuery3] 💡 El worker continuará procesando múltiples clientes")
+        print("[AggregatorQuery3] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery3] El worker continuará procesando múltiples clientes")
         
         # Loop principal - solo termina por señal
         while not shutdown_event.is_set():
             time.sleep(1)
         
-        print("[AggregatorQuery3] ✅ Terminando por señal externa")
+        print("[AggregatorQuery3] Terminando por señal externa")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery3] Interrupción recibida")

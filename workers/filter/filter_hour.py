@@ -139,7 +139,7 @@ def on_message(body, source_exchange):
             total_eos = sum(eos_count_per_session[session_id].values())
             expected_eos = NUM_FILTER_YEAR_WORKERS * len(INPUT_EXCHANGES)
             
-            print(f"[FilterHour] 🔚 EOS recibido desde {source_exchange} (sesión {session_id}) ({session_eos}/{NUM_FILTER_YEAR_WORKERS})")
+            print(f"[FilterHour] EOS desde {source_exchange} (sesión {session_id}) ({session_eos}/{NUM_FILTER_YEAR_WORKERS})")
             print(f"[FilterHour] Total EOS para sesión {session_id}: {total_eos}/{expected_eos}")
             
             # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de TODOS los exchanges para esta sesión
@@ -149,7 +149,7 @@ def on_message(body, source_exchange):
             )
             
             if all_complete:
-                print(f"[FilterHour Worker {WORKER_ID}] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
+                print(f"[FilterHour Worker {WORKER_ID}] EOS recibido de todas las fuentes para sesión {session_id}. Reenviando downstream...")
                 # Reenviar EOS a TODOS los outputs (broadcast)
                 eos_msg = serialize_message([], header)
                 
@@ -241,14 +241,14 @@ if __name__ == "__main__":
         
         # Esperar indefinidamente - el worker NO termina después de EOS
         # Solo termina por señal externa (SIGTERM, SIGINT)
-        print(f"[FilterHour Worker {WORKER_ID}] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
-        print(f"[FilterHour Worker {WORKER_ID}] 💡 El worker continuará procesando múltiples clientes")
+        print(f"[FilterHour Worker {WORKER_ID}] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print(f"[FilterHour Worker {WORKER_ID}] El worker continuará procesando múltiples clientes")
         
         # Loop principal - solo termina por señal
         while not shutdown_event.is_set():
             time.sleep(1)
         
-        print(f"[FilterHour Worker {WORKER_ID}] ✅ Terminando por señal externa")
+        print(f"[FilterHour Worker {WORKER_ID}] Terminando por señal externa")
             
     except KeyboardInterrupt:
         print("\n[FilterHour] Interrupción recibida")

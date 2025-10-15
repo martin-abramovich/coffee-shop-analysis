@@ -100,8 +100,9 @@ class AggregatorQuery2:
             session_data['month_item_metrics'][key]['total_subtotal'] += total_subtotal
         
         session_data['batches_received'] += 1
-        print(f"[AggregatorQuery2] Sesión {session_id}: Procesado batch {session_data['batches_received']} con {len(rows)} registros")
-        print(f"[AggregatorQuery2] Sesión {session_id}: Total combinaciones (mes, item_id): {len(session_data['month_item_metrics'])}")
+        # Log solo cada 100 batches para reducir verbosidad
+        if session_data['batches_received'] % 100 == 0:
+            print(f"[AggregatorQuery2] Sesión {session_id}: Procesados {session_data['batches_received']} batches, combinaciones: {len(session_data['month_item_metrics'])}")
     
     def generate_final_results(self, session_id):
         """Genera los resultados finales para Query 2 con JOIN para una sesión específica."""
@@ -166,18 +167,12 @@ class AggregatorQuery2:
         print(f"[AggregatorQuery2] Total registros de resultados: {len(final_results)}")
         
         # Mostrar ejemplos
-        print(f"[AggregatorQuery2] Ejemplos de resultados:")
-        for i, result in enumerate(final_results[:5]):
-            if 'sellings_qty' in result:
-                print(f"  {i+1}. {result['year_month_created_at']} - {result['item_name']}: {result['sellings_qty']} unidades vendidas")
-            if 'profit_sum' in result:
-                try:
-                    print(f"      Ganancia: ${float(result['profit_sum']):.2f}")
-                except Exception:
-                    print(f"      Ganancia: {result['profit_sum']}")
-        
-        if len(final_results) > 5:
-            print(f"  ... y {len(final_results) - 5} más")
+        # Solo mostrar ejemplos si hay pocos resultados
+        if len(final_results) <= 10:
+            print(f"[AggregatorQuery2] Ejemplos de resultados:")
+            for i, result in enumerate(final_results[:3]):
+                if 'sellings_qty' in result:
+                    print(f"  {i+1}. {result['year_month_created_at']} - {result['item_name']}: {result['sellings_qty']} unidades")
             
         return final_results
     
@@ -250,7 +245,7 @@ def on_metrics_message(body):
                 return
             
             if not session_data['eos_metrics_done']:
-                print(f"[AggregatorQuery2] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
+                print(f"[AggregatorQuery2] EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
                 session_data['eos_received'] = True
                 session_data['eos_metrics_done'] = True
                 
@@ -268,13 +263,13 @@ def on_metrics_message(body):
 
 def on_menu_items_message(body):
     """Maneja mensajes de menu_items para el JOIN."""
-    print(f"[AggregatorQuery2] 📥 Mensaje recibido en menu_items: {len(body)} bytes")
+    print(f"[AggregatorQuery2] Mensaje recibido en menu_items: {len(body)} bytes")
     
     try:
         header, rows = deserialize_message(body)
-        print(f"[AggregatorQuery2] 📋 Menu_items deserializado: {len(rows)} registros")
+        print(f"[AggregatorQuery2] Menu_items deserializado: {len(rows)} registros")
     except Exception as e:
-        print(f"[AggregatorQuery2] ❌ Error deserializando mensaje de menu_items: {e}")
+        print(f"[AggregatorQuery2] Error deserializando mensaje de menu_items: {e}")
         return
     
     session_id = header.get("session_id", "unknown")
@@ -304,10 +299,10 @@ def generate_and_send_results(session_id):
     
     # Evitar procesamiento duplicado para esta sesión
     if session_data['results_sent']:
-        print(f"[AggregatorQuery2] ⚠️ Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
+        print(f"[AggregatorQuery2] Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
         return
     
-    print(f"[AggregatorQuery2] 🔚 Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
+    print(f"[AggregatorQuery2] Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
     print(f"[AggregatorQuery2] Menu items cargados para sesión {session_id}: {session_data['menu_items_loaded']}")
     print(f"[AggregatorQuery2] Datos de sesión: {len(session_data['month_item_metrics'])} combinaciones")
     
@@ -405,23 +400,23 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery2 esperando mensajes...")
     print("[*] Query 2: Productos más vendidos y mayor ganancia por mes 2024-2025")
     print("[*] Consumiendo de 2 fuentes: métricas + menu_items para JOIN")
-    print(f"[*] 📡 Escuchando métricas de: {INPUT_EXCHANGE} con routing key '{INPUT_ROUTING_KEY}'")
-    print(f"[*] 📡 Escuchando menu_items de: {MENU_ITEMS_QUEUE}")
-    print("[*] 🎯 Esperará hasta recibir EOS de ambas fuentes para generar reporte")
+    print(f"[*] Escuchando métricas de: {INPUT_EXCHANGE} con routing key '{INPUT_ROUTING_KEY}'")
+    print(f"[*] Escuchando menu_items de: {MENU_ITEMS_QUEUE}")
+    print("[*] Esperará hasta recibir EOS de ambas fuentes para generar reporte")
     
     def consume_metrics():
         try:
             mq_metrics.start_consuming(on_metrics_message)
         except Exception as e:
             if not shutdown_event.is_set():
-                print(f"[AggregatorQuery2] ❌ Error en consumo de métricas: {e}")
+                print(f"[AggregatorQuery2] Error en consumo de métricas: {e}")
     
     def consume_menu_items():
         try:
             mq_menu_items.start_consuming(on_menu_items_message)
         except Exception as e:
             if not shutdown_event.is_set():
-                print(f"[AggregatorQuery2] ❌ Error en consumo de menu_items: {e}")
+                print(f"[AggregatorQuery2] Error en consumo de menu_items: {e}")
     
     try:
         # Ejecutar ambos consumidores en paralelo como daemon threads
@@ -433,14 +428,14 @@ if __name__ == "__main__":
         
         # Esperar indefinidamente - el worker NO termina después de EOS
         # Solo termina por señal externa (SIGTERM, SIGINT)
-        print("[AggregatorQuery2] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
-        print("[AggregatorQuery2] 💡 El worker continuará procesando múltiples clientes")
+        print("[AggregatorQuery2] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery2] El worker continuará procesando múltiples clientes")
         
         # Loop principal - solo termina por señal
         while not shutdown_event.is_set():
             time.sleep(1)
         
-        print("[AggregatorQuery2] ✅ Terminando por señal externa")
+        print("[AggregatorQuery2] Terminando por señal externa")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery2] Interrupción recibida")

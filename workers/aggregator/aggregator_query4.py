@@ -152,7 +152,7 @@ class AggregatorQuery4:
             
             # Control de memoria: evitar acumular demasiadas combinaciones
             if len(session_data['store_user_transactions']) >= self.max_combinations_per_session:
-                print(f"[AggregatorQuery4] ⚠️ LÍMITE ALCANZADO: Sesión {session_id} ha alcanzado {self.max_combinations_per_session} combinaciones. Ignorando nuevas.")
+                print(f"[AggregatorQuery4] LÍMITE ALCANZADO: Sesión {session_id} ha alcanzado {self.max_combinations_per_session} combinaciones. Ignorando nuevas.")
                 continue
             
             # Acumular conteo de transacciones para esta sesión
@@ -167,7 +167,7 @@ class AggregatorQuery4:
         
         # Alerta si hay demasiadas combinaciones acumuladas
         if len(session_data['store_user_transactions']) > 100000:
-            print(f"[AggregatorQuery4] ⚠️ ALERTA: Sesión {session_id} tiene {len(session_data['store_user_transactions'])} combinaciones acumuladas")
+            print(f"[AggregatorQuery4] ALERTA: Sesión {session_id} tiene {len(session_data['store_user_transactions'])} combinaciones acumuladas")
     
     def generate_final_results(self, session_id):
         """Genera los resultados finales para Query 4 con doble JOIN y TOP 3 para una sesión específica."""
@@ -287,7 +287,7 @@ def on_transactions_message(body):
                 print(f"[AggregatorQuery4] Esperando más EOS para sesión {session_id}...")
                 return
             
-            log_with_timestamp(f"[AggregatorQuery4] ✅ EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
+            log_with_timestamp(f"[AggregatorQuery4] EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
             session_data['eos_received'] = True
             session_data['eos_transactions_done'] = True
             
@@ -364,10 +364,10 @@ def generate_and_send_results(session_id):
     
     # Evitar procesamiento duplicado para esta sesión
     if session_data['results_sent']:
-        print(f"[AggregatorQuery4] ⚠️ Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
+        print(f"[AggregatorQuery4] Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
         return
     
-    print(f"[AggregatorQuery4] 🔚 Todos los flujos completados para sesión {session_id}. Generando resultados finales...")
+    print(f"[AggregatorQuery4] Todos los flujos completados para sesión {session_id}. Generando resultados finales...")
     
     # Marcar como enviado ANTES de generar para evitar race conditions
     session_data['results_sent'] = True
@@ -433,7 +433,7 @@ def generate_and_send_results(session_id):
             if total_batches <= 5 or (i // batch_size + 1) % 10 == 0:
                 print(f"[AggregatorQuery4] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
     
-    print(f"[AggregatorQuery4] ✅ Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
+    print(f"[AggregatorQuery4] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
     
     # Programar limpieza de la sesión después de un delay
     def delayed_cleanup():
@@ -511,14 +511,14 @@ if __name__ == "__main__":
         
         # Esperar indefinidamente - el worker NO termina después de EOS
         # Solo termina por señal externa (SIGTERM, SIGINT)
-        print("[AggregatorQuery4] ✅ Worker iniciado, esperando mensajes de múltiples sesiones...")
-        print("[AggregatorQuery4] 💡 El worker continuará procesando múltiples clientes")
+        print("[AggregatorQuery4] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery4] El worker continuará procesando múltiples clientes")
         
         # Loop principal - solo termina por señal
         while not shutdown_event.is_set():
             time.sleep(1)
         
-        print("[AggregatorQuery4] ✅ Terminando por señal externa")
+        print("[AggregatorQuery4] Terminando por señal externa")
         
     except KeyboardInterrupt:
         print("\n[AggregatorQuery4] Interrupción recibida")

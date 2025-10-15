@@ -13,7 +13,6 @@ from gateway.server import handle_client, active_sessions, sessions_lock
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from gateway.results_handler import start_results_handler
 
-# Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -24,7 +23,7 @@ LISTEN_HOST = "0.0.0.0"  # Para escuchar conexiones TCP
 PORT = 9000  # Puerto para recibir del cliente
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')  # Hostname de RabbitMQ
 
-# Control de shutdown global
+# Control de shutdown
 shutdown_event = threading.Event()
 active_threads = []
 threads_lock = threading.Lock()
@@ -83,7 +82,7 @@ def main():
         mq_map["stores"] = MessageMiddlewareExchange(
             host=RABBITMQ_HOST, 
             exchange_name="stores_raw",
-            route_keys=["q3", "q4"]  # Q3 y Q4 consumen de este exchange
+            route_keys=["q3", "q4"]
         )
         
         # Guardar configuración de escalado en mq_map para usar en server.py
@@ -103,11 +102,10 @@ def main():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((LISTEN_HOST, PORT))
-            s.listen(5)  # Permitir hasta 5 conexiones en cola
+            s.listen(5)
             logger.info(f"[GATEWAY] Escuchando en {LISTEN_HOST}:{PORT}")
             logger.info("[GATEWAY] Listo para recibir datos del cliente")
 
-            # Configurar manejadores de señales
             signal.signal(signal.SIGTERM, signal_handler)
             signal.signal(signal.SIGINT, signal_handler)
             
@@ -115,7 +113,6 @@ def main():
             
             while not shutdown_event.is_set():
                 try:
-                    # Usar timeout para poder verificar shutdown_event
                     s.settimeout(1.0)
                     try:
                         conn, addr = s.accept()
@@ -130,14 +127,12 @@ def main():
                         client_thread.daemon = True
                         client_thread.start()
                         
-                        # Registrar thread activo
                         with threads_lock:
                             active_threads.append(client_thread)
                         
-                        logger.info(f"Thread creado para cliente {addr}")
+                        # Thread creado para cliente
                         
                     except socket.timeout:
-                        # Timeout normal, continuar
                         continue
                         
                 except KeyboardInterrupt:
@@ -154,7 +149,7 @@ def main():
             with threads_lock:
                 for thread in active_threads:
                     if thread.is_alive():
-                        logger.info(f"Esperando thread {thread.name}...")
+                        # Esperando thread
                         thread.join(timeout=10)
             
             logger.info("Todos los clientes han terminado")

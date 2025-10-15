@@ -82,9 +82,8 @@ class ResultsHandler:
                 f.write(','.join(values) + '\n')
         
         print(f"\n{'='*60}")
-        print(f"[ResultsHandler] ✅ {query_name} COMPLETADO (sesión {session_id})")
-        print(f"[ResultsHandler] Resultados: {len(results_list)}")
-        print(f"[ResultsHandler] Archivo: {output_file}")
+        print(f"[ResultsHandler] {query_name} COMPLETADO (sesión {session_id})")
+        print(f"[ResultsHandler] Resultados de {query_name} guardados en {output_file}")
         print(f"{'='*60}\n")
 
 def start_results_handler():
