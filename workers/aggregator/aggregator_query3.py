@@ -302,6 +302,19 @@ def generate_and_send_results(session_id):
                 print(f"[AggregatorQuery3] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
     
     print(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
+    
+    # Limpiar datos de la sesión completada después de un delay
+    def delayed_cleanup():
+        if session_id in aggregator.session_data:
+            del aggregator.session_data[session_id]
+            print(f"[AggregatorQuery3] Sesión {session_id} limpiada de memoria")
+        # Limpiar también el contador EOS
+        with eos_lock:
+            if session_id in eos_count:
+                del eos_count[session_id]
+    
+    cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+    cleanup_thread.start()
 
 if __name__ == "__main__":
     import threading

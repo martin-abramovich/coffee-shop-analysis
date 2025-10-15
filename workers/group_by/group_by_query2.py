@@ -118,6 +118,17 @@ def on_message(body):
                 eos_msg = serialize_message([], header)  # Mantiene session_id en header
                 mq_out.send(eos_msg)
                 print(f"[GroupByQuery2] EOS reenviado para sesión {session_id}")
+                
+                # Limpiar contador EOS para esta sesión después de un delay
+                def delayed_cleanup():
+                    time.sleep(30)  # Esperar 30 segundos antes de limpiar
+                    with eos_lock:
+                        if session_id in eos_count:
+                            del eos_count[session_id]
+                            print(f"[GroupByQuery2] Sesión {session_id} limpiada de contadores EOS")
+                
+                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+                cleanup_thread.start()
         return
     
     # Procesamiento normal
