@@ -4,6 +4,7 @@ import signal
 import threading
 from collections import defaultdict
 from datetime import datetime
+import time
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -187,8 +188,8 @@ def on_message(body):
     unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
     
     # Log compacto solo si hay datos significativos
-    if batches_sent > 0 and len(month_item_metrics) > 100:
-        print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
+    # if batches_sent > 0 and len(month_item_metrics) > 100:
+    #     print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")

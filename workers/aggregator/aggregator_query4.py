@@ -120,7 +120,6 @@ class AggregatorQuery4:
             if normalized_user_id:
                 session_data['user_id_to_birthdate'][normalized_user_id] = normalized_birthdate
         
-        print(f"[AggregatorQuery4] Sesión {session_id}: Users cargados para JOIN: {len(session_data['user_id_to_birthdate'])}")
     
     def accumulate_transactions(self, rows, session_id):
         """Acumula conteos de transacciones de group_by_query4 para una sesión específica."""
@@ -150,10 +149,6 @@ class AggregatorQuery4:
                 continue
             key = (normalized_store_id, normalized_user_id)
             
-            # Control de memoria: evitar acumular demasiadas combinaciones
-            if len(session_data['store_user_transactions']) >= self.max_combinations_per_session:
-                print(f"[AggregatorQuery4] LÍMITE ALCANZADO: Sesión {session_id} ha alcanzado {self.max_combinations_per_session} combinaciones. Ignorando nuevas.")
-                continue
             
             # Acumular conteo de transacciones para esta sesión
             session_data['store_user_transactions'][key] += transaction_count
@@ -162,13 +157,10 @@ class AggregatorQuery4:
         session_data['batches_received'] += 1
         
         # OPTIMIZACIÓN: Logs menos frecuentes para mejor performance
-        if session_data['batches_received'] % 100 == 0 or session_data['batches_received'] <= 5:
+        if session_data['batches_received'] % 10000 == 0 or session_data['batches_received'] <= 5:
             print(f"[AggregatorQuery4] Sesión {session_id}: Batch {session_data['batches_received']}: {processed_count}/{len(rows)} procesados; total combinaciones={len(session_data['store_user_transactions'])}")
         
-        # Alerta si hay demasiadas combinaciones acumuladas
-        if len(session_data['store_user_transactions']) > 100000:
-            print(f"[AggregatorQuery4] ALERTA: Sesión {session_id} tiene {len(session_data['store_user_transactions'])} combinaciones acumuladas")
-    
+          
     def generate_final_results(self, session_id):
         """Genera los resultados finales para Query 4 con doble JOIN y TOP 3 para una sesión específica."""
         session_data = self.get_session_data(session_id)

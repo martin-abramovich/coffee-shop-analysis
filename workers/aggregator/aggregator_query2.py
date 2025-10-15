@@ -101,7 +101,7 @@ class AggregatorQuery2:
         
         session_data['batches_received'] += 1
         # Log solo cada 100 batches para reducir verbosidad
-        if session_data['batches_received'] % 100 == 0:
+        if session_data['batches_received'] % 10000 == 0:
             print(f"[AggregatorQuery2] Sesión {session_id}: Procesados {session_data['batches_received']} batches, combinaciones: {len(session_data['month_item_metrics'])}")
     
     def generate_final_results(self, session_id):

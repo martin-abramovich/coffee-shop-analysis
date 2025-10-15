@@ -4,6 +4,7 @@ import signal
 import threading
 from collections import defaultdict
 from datetime import datetime
+import time
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -187,8 +188,8 @@ def on_message(body):
     unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
     unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
     # Log más compacto
-    if batches_sent > 0:
-        print(f"[GroupByQuery3] in={total_in} created={len(semester_store_metrics)} sent={batches_sent}_batches semesters={unique_semesters} stores={unique_stores} tpv={total_tpv:.2f}")
+    # if batches_sent > 0:
+    #     print(f"[GroupByQuery3] in={total_in} created={len(semester_store_metrics)} sent={batches_sent}_batches semesters={unique_semesters} stores={unique_stores} tpv={total_tpv:.2f}")
 
 if __name__ == "__main__":
     import threading

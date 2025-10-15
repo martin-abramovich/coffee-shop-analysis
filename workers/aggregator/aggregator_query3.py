@@ -95,7 +95,7 @@ class AggregatorQuery3:
         
         session_data['batches_received'] += 1
         # Log solo cada 10 batches para no saturar
-        if session_data['batches_received'] % 10 == 0 or session_data['batches_received'] == 1:
+        if session_data['batches_received'] % 10000 == 0 or session_data['batches_received'] == 1:
             print(f"[AggregatorQuery3] Sesión {session_id}: Procesado batch {session_data['batches_received']} con {len(rows)} registros. Total combinaciones: {len(session_data['semester_store_tpv'])}")
     
     def generate_final_results(self, session_id):

@@ -3,6 +3,7 @@ import os
 import signal
 import threading
 from collections import defaultdict
+import time
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -153,7 +154,7 @@ def on_message(body):
     unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
     unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
     
-    print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent={batches_sent}_batches stores={unique_stores} users={unique_users} tx_total={total_transactions}")
+    #print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent={batches_sent}_batches stores={unique_stores} users={unique_users} tx_total={total_transactions}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery4] Iniciando worker {WORKER_ID}...")

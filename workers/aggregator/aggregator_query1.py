@@ -53,7 +53,7 @@ class AggregatorQuery1:
         self.total_received += len(rows)
         
         # Log solo cada 1000 transacciones recibidas
-        if self.total_received % 1000 < len(rows):
+        if self.total_received % 10000 < len(rows):
             total_accumulated = sum(len(data['transactions']) for data in self.session_data.values())
             print(f"[AggregatorQuery1] Total acumulado: {total_accumulated}/{self.total_received} (sesiones: {len(self.session_data)})")
     
