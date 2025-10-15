@@ -258,7 +258,7 @@ if __name__ == "__main__":
         except:
             pass
         try:
-            for mq_out in mq_outputs.values():
+            for mq_out in mq_outputs_scalable.values():
                 mq_out.close()
         except:
             pass
