@@ -30,12 +30,7 @@ class AggregatorQuery2:
         # Datos por sesión: {session_id: session_data}
         self.session_data = {}
         
-        # Diccionario global para JOIN: item_id -> item_name (compartido entre sesiones)
-        self.item_id_to_name = {}
-        
-        # Control de flujo global
-        self.menu_items_loaded = False
-        self.eos_menu_done = False
+        # Los menu_items ahora se manejan por sesión (no globalmente)
     
     def initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
@@ -48,7 +43,12 @@ class AggregatorQuery2:
                 'batches_received': 0,
                 'eos_received': False,
                 'results_sent': False,
-                'eos_metrics_done': False
+                'eos_metrics_done': False,
+                # Diccionario de JOIN específico de esta sesión
+                'item_id_to_name': {},
+                # Control de flujo específico de esta sesión
+                'menu_items_loaded': False,
+                'eos_menu_done': False
             }
     
     def get_session_data(self, session_id):
@@ -56,16 +56,18 @@ class AggregatorQuery2:
         self.initialize_session(session_id)
         return self.session_data[session_id]
         
-    def load_menu_items(self, rows):
-        """Carga menu_items para construir el diccionario item_id -> item_name."""
+    def load_menu_items(self, rows, session_id):
+        """Carga menu_items para construir el diccionario item_id -> item_name para una sesión específica."""
+        session_data = self.get_session_data(session_id)
+        
         for row in rows:
             item_id = row.get('item_id')
             item_name = row.get('item_name')
             
             if item_id and item_name:
-                self.item_id_to_name[item_id] = item_name.strip()
+                session_data['item_id_to_name'][item_id] = item_name.strip()
         
-        print(f"[AggregatorQuery2] Cargados {len(self.item_id_to_name)} menu items para JOIN")
+        print(f"[AggregatorQuery2] Sesión {session_id}: Cargados {len(session_data['item_id_to_name'])} menu items para JOIN")
     
     def accumulate_metrics(self, rows, session_id):
         """Acumula métricas parciales de group_by_query2 para una sesión específica."""
@@ -107,23 +109,23 @@ class AggregatorQuery2:
         
         print(f"[AggregatorQuery2] Generando resultados finales para sesión {session_id}...")
         print(f"[AggregatorQuery2] Total combinaciones procesadas: {len(session_data['month_item_metrics'])}")
-        print(f"[AggregatorQuery2] Menu items disponibles para JOIN: {len(self.item_id_to_name)}")
+        print(f"[AggregatorQuery2] Menu items disponibles para JOIN: {len(session_data['item_id_to_name'])}")
         
         if not session_data['month_item_metrics']:
             print(f"[AggregatorQuery2] No hay datos para procesar en sesión {session_id}")
             return []
         
-        # Si no hay menu_items, haremos un fallback usando item_id como nombre
-        if not self.item_id_to_name:
-            print(f"[AggregatorQuery2] WARNING: No hay menu_items cargados. Se usará item_id como item_name (fallback)")
+        # Si no hay menu_items para esta sesión, haremos un fallback usando item_id como nombre
+        if not session_data['item_id_to_name']:
+            print(f"[AggregatorQuery2] WARNING: No hay menu_items cargados para sesión {session_id}. Se usará item_id como item_name (fallback)")
         
         # Preparar resultados por mes con JOIN
         results_by_month = defaultdict(list)
         
         # Agrupar por mes y hacer JOIN con menu_items
         for (month, item_id), metrics in session_data['month_item_metrics'].items():
-            # JOIN: buscar item_name para el item_id (o fallback al propio id)
-            item_name = self.item_id_to_name.get(item_id) or str(item_id)
+            # JOIN: buscar item_name para el item_id de esta sesión (o fallback al propio id)
+            item_name = session_data['item_id_to_name'].get(item_id) or str(item_id)
             
             results_by_month[month].append({
                 'item_id': item_id,
@@ -252,8 +254,8 @@ def on_metrics_message(body):
                 session_data['eos_received'] = True
                 session_data['eos_metrics_done'] = True
                 
-                # Si ya tenemos menu_items cargados y aún no enviamos, generar resultados para esta sesión
-                if aggregator.menu_items_loaded and not session_data['results_sent']:
+                # Si ya tenemos menu_items cargados para esta sesión y aún no enviamos, generar resultados
+                if session_data['menu_items_loaded'] and not session_data['results_sent']:
                     print(f"[AggregatorQuery2] Generando resultados para sesión {session_id}...")
                     generate_and_send_results(session_id)
                 else:
@@ -275,27 +277,24 @@ def on_menu_items_message(body):
         print(f"[AggregatorQuery2] ❌ Error deserializando mensaje de menu_items: {e}")
         return
     
+    session_id = header.get("session_id", "unknown")
+    session_data = aggregator.get_session_data(session_id)
+    
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
-        session_id = header.get("session_id", "unknown")
-        print(f"[AggregatorQuery2] EOS recibido en menu_items para sesión {session_id}")
+        print(f"[AggregatorQuery2] EOS recibido en menu_items para sesión {session_id}. Marcando como listo...")
+        session_data['menu_items_loaded'] = True
+        session_data['eos_menu_done'] = True
         
-        # Marcar menu_items como cargados globalmente (compartido entre sesiones)
-        aggregator.menu_items_loaded = True
-        aggregator.eos_menu_done = True
-        
-        # Generar resultados para todas las sesiones que estén esperando
-        for sid, sdata in aggregator.session_data.items():
-            if sdata['eos_received'] and not sdata['results_sent']:
-                print(f"[AggregatorQuery2] Generando resultados para sesión {sid}...")
-                generate_and_send_results(sid)
+        # Generar resultados para esta sesión si ya tiene todo listo
+        if session_data['eos_received'] and not session_data['results_sent']:
+            print(f"[AggregatorQuery2] Generando resultados para sesión {session_id}...")
+            generate_and_send_results(session_id)
         return
     
-    # Cargar menu_items para JOIN
+    # Cargar menu_items para JOIN en esta sesión
     if rows:
-        aggregator.load_menu_items(rows)
-        # Marcar como cargado si recibimos datos, aunque aún no llegue EOS
-        aggregator.menu_items_loaded = True
+        aggregator.load_menu_items(rows, session_id)
 
 def generate_and_send_results(session_id):
     """Genera y envía los resultados finales cuando ambos flujos terminaron para una sesión específica."""
@@ -309,7 +308,7 @@ def generate_and_send_results(session_id):
         return
     
     print(f"[AggregatorQuery2] 🔚 Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
-    print(f"[AggregatorQuery2] Menu items cargados: {aggregator.menu_items_loaded}")
+    print(f"[AggregatorQuery2] Menu items cargados para sesión {session_id}: {session_data['menu_items_loaded']}")
     print(f"[AggregatorQuery2] Datos de sesión: {len(session_data['month_item_metrics'])} combinaciones")
     
     # Marcar como enviado ANTES de generar para evitar race conditions
