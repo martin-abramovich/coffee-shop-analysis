@@ -46,15 +46,14 @@ class AggregatorQuery1:
                 'final_amount': row.get('final_amount')
             }
             
-            # Validar que tengamos los campos necesarios
             if transaction_record.get('transaction_id') and transaction_record.get('final_amount') is not None:
                 session_info['transactions'].append(transaction_record)
         
         session_info['total_received'] += len(rows)
         self.total_received += len(rows)
         
-        # Log solo cada 10000 transacciones recibidas para reducir verbosidad
-        if self.total_received % 10000 < len(rows):
+        # Log solo cada 1000 transacciones recibidas
+        if self.total_received % 1000 < len(rows):
             total_accumulated = sum(len(data['transactions']) for data in self.session_data.values())
             print(f"[AggregatorQuery1] Total acumulado: {total_accumulated}/{self.total_received} (sesiones: {len(self.session_data)})")
     
@@ -68,8 +67,6 @@ class AggregatorQuery1:
         
         session_info = self.session_data[session_id]
         accumulated_transactions = session_info['transactions']
-        
-        print(f"[AggregatorQuery1] Total transacciones válidas para sesión {session_id}: {len(accumulated_transactions)}")
         
         if not accumulated_transactions:
             print(f"[AggregatorQuery1] No hay transacciones válidas para reportar en sesión {session_id}")
@@ -85,20 +82,15 @@ class AggregatorQuery1:
                     'final_amount': float(txn['final_amount']) if isinstance(txn['final_amount'], str) else txn['final_amount']
                 }
                 results.append(result)
-            except (ValueError, TypeError):
-                # Saltar transacciones con datos inválidos sin log
+            except (ValueError, TypeError) as e:
+                print(f"[AggregatorQuery1] Error procesando transacción {txn}: {e}")
                 continue
         
         # Ordenar por transaction_id para consistencia
         results.sort(key=lambda x: x['transaction_id'])
         
-        log_with_timestamp(f"[AggregatorQuery1] Resultados enviados para sesión {session_id}: {len(final_results)} transacciones")
-        # Solo mostrar ejemplo si hay pocos resultados
-        if len(results) <= 10:
-            print(f"[AggregatorQuery1] Ejemplo de resultados:")
-            for i, result in enumerate(results[:5]):
-                print(f"  {i+1}. TXN: {result['transaction_id']}, Monto: ${result['final_amount']:.2f}")
-        
+        print(f"[AggregatorQuery1] Resultados generados para sesión {session_id}: {len(results)} transacciones")
+
         # Estadísticas
         total_amount = sum(r['final_amount'] for r in results)
         avg_amount = total_amount / len(results) if results else 0
@@ -106,7 +98,6 @@ class AggregatorQuery1:
             
         return results
 
-# Instancia global del agregador
 aggregator = AggregatorQuery1()
 
 if __name__ == "__main__":
@@ -212,7 +203,7 @@ if __name__ == "__main__":
                                     break
                                 except Exception as e2:
                                     print(f"[AggregatorQuery1] Error en reconexión para sesión {session_id}: {e2}")
-                                    pass  # Continuar con el siguiente intento
+                                    time.sleep(0.1)  # Breve pausa antes del siguiente intento
                     
                     if not sent:
                         print(f"[AggregatorQuery1] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
@@ -228,6 +219,7 @@ if __name__ == "__main__":
             
             # Programar limpieza de la sesión después de un delay más largo para múltiples clientes
             def delayed_cleanup():
+                time.sleep(60)  # Esperar 60 segundos antes de limpiar (más tiempo para múltiples clientes)
                 with eos_counter.lock:
                     if session_id in eos_counter.session_counts:
                         del eos_counter.session_counts[session_id]
@@ -281,7 +273,7 @@ if __name__ == "__main__":
         
         # Esperar indefinidamente - el worker NO termina después de EOS
         # Solo termina por señal externa (SIGTERM, SIGINT)
-        log_with_timestamp(f"[AggregatorQuery1] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery1] Worker iniciado, esperando mensajes de múltiples sesiones...")
         print("[AggregatorQuery1] El worker continuará procesando múltiples clientes")
         
         # Loop principal - solo termina por señal
