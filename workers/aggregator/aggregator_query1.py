@@ -2,9 +2,16 @@ import sys
 import os
 import signal
 import threading
+import time
+from datetime import datetime
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+def log_with_timestamp(message):
+    """Función para logging con timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] {message}")
 
 from middleware.middleware import MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
@@ -21,12 +28,17 @@ ROUTING_KEY = "query1_results"            # routing para resultados
 
 class AggregatorQuery1:
     def __init__(self):
-        # Acumulador de transacciones válidas
-        self.accumulated_transactions = []
+        # Acumulador de transacciones válidas por sesión
+        self.session_data = {}  # {session_id: {'transactions': [], 'total_received': 0, 'results_sent': False}}
         self.total_received = 0
         
-    def accumulate_transactions(self, rows):
-        """Acumula transacciones que pasaron todos los filtros."""
+    def accumulate_transactions(self, rows, session_id):
+        """Acumula transacciones que pasaron todos los filtros para una sesión específica."""
+        if session_id not in self.session_data:
+            self.session_data[session_id] = {'transactions': [], 'total_received': 0, 'results_sent': False}
+        
+        session_info = self.session_data[session_id]
+        
         for row in rows:
             # Extraer los campos requeridos para Query 1: transaction_id y final_amount
             transaction_record = {
@@ -34,27 +46,35 @@ class AggregatorQuery1:
                 'final_amount': row.get('final_amount')
             }
             
-            # Validar que tengamos los campos necesarios
             if transaction_record.get('transaction_id') and transaction_record.get('final_amount') is not None:
-                self.accumulated_transactions.append(transaction_record)
+                session_info['transactions'].append(transaction_record)
         
+        session_info['total_received'] += len(rows)
         self.total_received += len(rows)
-        # Log solo cada 1000 transacciones recibidas
-        if self.total_received % 1000 < len(rows):
-            print(f"[AggregatorQuery1] Total acumulado: {len(self.accumulated_transactions)}/{self.total_received}")
-    
-    def generate_final_results(self):
-        """Genera los resultados finales para Query 1."""
-        print(f"[AggregatorQuery1] Generando resultados finales...")
-        print(f"[AggregatorQuery1] Total transacciones válidas: {len(self.accumulated_transactions)}")
         
-        if not self.accumulated_transactions:
-            print(f"[AggregatorQuery1] No hay transacciones válidas para reportar")
+        # Log solo cada 1000 transacciones recibidas
+        if self.total_received % 10000 < len(rows):
+            total_accumulated = sum(len(data['transactions']) for data in self.session_data.values())
+            print(f"[AggregatorQuery1] Total acumulado: {total_accumulated}/{self.total_received} (sesiones: {len(self.session_data)})")
+    
+    def generate_final_results(self, session_id):
+        """Genera los resultados finales para Query 1 de una sesión específica."""
+        print(f"[AggregatorQuery1] Generando resultados finales para sesión {session_id}...")
+        
+        if session_id not in self.session_data:
+            print(f"[AggregatorQuery1] No hay datos para sesión {session_id}")
+            return []
+        
+        session_info = self.session_data[session_id]
+        accumulated_transactions = session_info['transactions']
+        
+        if not accumulated_transactions:
+            print(f"[AggregatorQuery1] No hay transacciones válidas para reportar en sesión {session_id}")
             return []
         
         # Para Query 1, retornamos todas las transacciones con transaction_id y final_amount
         results = []
-        for txn in self.accumulated_transactions:
+        for txn in accumulated_transactions:
             # Asegurar tipos de datos correctos
             try:
                 result = {
@@ -69,13 +89,8 @@ class AggregatorQuery1:
         # Ordenar por transaction_id para consistencia
         results.sort(key=lambda x: x['transaction_id'])
         
-        print(f"[AggregatorQuery1] Resultados generados: {len(results)} transacciones")
-        print(f"[AggregatorQuery1] Ejemplo de resultados:")
-        for i, result in enumerate(results[:5]):  # Mostrar solo los primeros 5
-            print(f"  {i+1}. TXN: {result['transaction_id']}, Monto: ${result['final_amount']:.2f}")
-        if len(results) > 5:
-            print(f"  ... y {len(results) - 5} más")
-        
+        print(f"[AggregatorQuery1] Resultados generados para sesión {session_id}: {len(results)} transacciones")
+
         # Estadísticas
         total_amount = sum(r['final_amount'] for r in results)
         avg_amount = total_amount / len(results) if results else 0
@@ -83,64 +98,73 @@ class AggregatorQuery1:
             
         return results
 
-# Instancia global del agregador
 aggregator = AggregatorQuery1()
-results_sent = False  # Flag para evitar procesamiento duplicado de EOS
 
 if __name__ == "__main__":
     import threading
     
-    # Control de EOS - esperamos hasta recibir EOS
-    eos_received = threading.Event()
+    # Control de EOS por sesión - esperamos hasta recibir EOS de todos los workers para cada sesión
+    eos_received = {}  # {session_id: threading.Event()}
     shutdown_event = threading.Event()
     
-    # Control de EOS - necesitamos recibir de todos los workers de filter_amount
+    # Control de EOS - necesitamos recibir de todos los workers de filter_amount por sesión
     class EOSCounter:
         def __init__(self):
-            self.count = 0
+            self.session_counts = {}  # {session_id: count}
             self.lock = threading.Lock()
+        
+        def increment(self, session_id):
+            with self.lock:
+                if session_id not in self.session_counts:
+                    self.session_counts[session_id] = 0
+                self.session_counts[session_id] += 1
+                return self.session_counts[session_id]
     
     eos_counter = EOSCounter()
     
     def enhanced_on_message(body):
-        global results_sent
+        global aggregator
         header, rows = deserialize_message(body)
+        session_id = header.get("session_id", "unknown")
         
         # Verificar si es mensaje de End of Stream
         if header.get("is_eos") == "true":
-            with eos_counter.lock:
-                eos_counter.count += 1
-                print(f"[AggregatorQuery1] 🔚 EOS recibido ({eos_counter.count}/{NUM_FILTER_AMOUNT_WORKERS})")
-                
-                # Solo procesar cuando recibimos de TODOS los workers
-                if eos_counter.count < NUM_FILTER_AMOUNT_WORKERS:
-                    print(f"[AggregatorQuery1] Esperando más EOS...")
-                    return
-                
-                # Prevenir procesamiento duplicado
-                if results_sent:
-                    print("[AggregatorQuery1] ⚠️ EOS duplicado ignorado (resultados ya enviados)")
-                    return
+            count = eos_counter.increment(session_id)
+            log_with_timestamp(f"[AggregatorQuery1] EOS recibido para sesión {session_id} ({count}/{NUM_FILTER_AMOUNT_WORKERS})")
             
-            print("[AggregatorQuery1] ✅ EOS recibido de TODOS los workers. Generando resultados finales...")
-            results_sent = True
+            # Solo procesar cuando recibimos de TODOS los workers para esta sesión
+            if count < NUM_FILTER_AMOUNT_WORKERS:
+                print(f"[AggregatorQuery1] Esperando más EOS para sesión {session_id}...")
+                return
             
-            # Generar resultados finales
-            final_results = aggregator.generate_final_results()
+            # Prevenir procesamiento duplicado usando session_data
+            if session_id not in aggregator.session_data:
+                aggregator.session_data[session_id] = {'transactions': [], 'total_received': 0, 'results_sent': False}
+            
+            if aggregator.session_data[session_id].get('results_sent', False):
+                print(f"[AggregatorQuery1] EOS duplicado ignorado para sesión {session_id} (resultados ya enviados)")
+                return
+            
+            log_with_timestamp(f"[AggregatorQuery1] EOS recibido de TODOS los workers para sesión {session_id}. Generando resultados finales...")
+            aggregator.session_data[session_id]['results_sent'] = True
+            
+            # Generar resultados finales para esta sesión
+            final_results = aggregator.generate_final_results(session_id)
             
             if final_results:
                 # Enviar resultados finales
                 results_header = {
                     "type": "result",
-                    "stream_id": "query1_results",
-                    "batch_id": "final",
+                    "stream_id": f"query1_results_{session_id}",
+                    "batch_id": f"final_{session_id}",
                     "is_batch_end": "true",
                     "is_eos": "false",
                     "query": "query1",
                     "total_results": str(len(final_results)),
                     "description": "Transacciones_2024-2025_06:00-23:00_monto>=75",
                     "columns": "transaction_id:final_amount",
-                    "is_final_result": "true"
+                    "is_final_result": "true",
+                    "session_id": session_id
                 }
                 
                 # Enviar en batches si hay muchos resultados
@@ -155,7 +179,7 @@ if __name__ == "__main__":
                     
                     result_msg = serialize_message(batch, batch_header)
                     
-                    # Intentar enviar con reconexión automática si falla
+                    # Intentar enviar con manejo de errores por sesión
                     max_retries = 3
                     sent = False
                     for retry in range(max_retries):
@@ -164,31 +188,57 @@ if __name__ == "__main__":
                             sent = True
                             # Log cada 100 batches para no saturar
                             if (i // batch_size + 1) % 100 == 0 or (i // batch_size + 1) == total_batches:
-                                print(f"[AggregatorQuery1] Progreso: batch {batch_header['batch_number']}/{batch_header['total_batches']}")
+                                print(f"[AggregatorQuery1] Progreso sesión {session_id}: batch {batch_header['batch_number']}/{batch_header['total_batches']}")
                             break
                         except Exception as e:
-                            print(f"[AggregatorQuery1] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
+                            print(f"[AggregatorQuery1] Error enviando batch {batch_header['batch_number']} para sesión {session_id} (intento {retry+1}/{max_retries}): {e}")
                             if retry < max_retries - 1:
+                                # Crear nueva conexión específica para esta sesión en caso de error
                                 try:
-                                    mq_out.close()
-                                except:
-                                    pass
-                                from middleware.middleware import MessageMiddlewareExchange
-                                mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+                                    from middleware.middleware import MessageMiddlewareExchange
+                                    temp_mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+                                    temp_mq_out.send(result_msg)
+                                    sent = True
+                                    print(f"[AggregatorQuery1] Reconexión exitosa para sesión {session_id}")
+                                    break
+                                except Exception as e2:
+                                    print(f"[AggregatorQuery1] Error en reconexión para sesión {session_id}: {e2}")
+                                    time.sleep(0.1)  # Breve pausa antes del siguiente intento
                     
                     if not sent:
                         print(f"[AggregatorQuery1] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']}")
                 
-                print(f"[AggregatorQuery1] Envío completado: {total_batches} batches, {len(final_results)} transacciones")
+                print(f"[AggregatorQuery1] Envío completado para sesión {session_id}: {total_batches} batches, {len(final_results)} transacciones")
             
-            print("[AggregatorQuery1] 🎉 Resultados finales enviados. Agregador terminado.")
-            eos_received.set()
-            shutdown_event.set()
+            print(f"[AggregatorQuery1] Resultados finales enviados para sesión {session_id}.")
+            
+            # Marcar EOS recibido para esta sesión
+            if session_id not in eos_received:
+                eos_received[session_id] = threading.Event()
+            eos_received[session_id].set()
+            
+            # Programar limpieza de la sesión después de un delay más largo para múltiples clientes
+            def delayed_cleanup():
+                time.sleep(60)  # Esperar 60 segundos antes de limpiar (más tiempo para múltiples clientes)
+                with eos_counter.lock:
+                    if session_id in eos_counter.session_counts:
+                        del eos_counter.session_counts[session_id]
+                if session_id in eos_received:
+                    del eos_received[session_id]
+                # Limpiar datos de la sesión del agregador
+                if session_id in aggregator.session_data:
+                    del aggregator.session_data[session_id]
+                print(f"[AggregatorQuery1] Sesión {session_id} limpiada después de 60s")
+            
+            cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+            cleanup_thread.start()
+            
+            # No terminar el worker, puede recibir más sesiones
             return
         
-        # Procesamiento normal: acumular datos
+        # Procesamiento normal: acumular datos para esta sesión
         if rows:
-            aggregator.accumulate_transactions(rows)
+            aggregator.accumulate_transactions(rows, session_id)
     
     def signal_handler(signum, frame):
         print(f"[AggregatorQuery1] Señal {signum} recibida, cerrando...")
@@ -206,7 +256,7 @@ if __name__ == "__main__":
     print("[*] AggregatorQuery1 esperando mensajes...")
     print("[*] Query 1: Transacciones 2024-2025, 06:00-23:00, monto >= 75")
     print("[*] Columnas output: transaction_id, final_amount")
-    print("[*] 🎯 Esperará hasta recibir EOS para generar reporte")
+    print("[*] Esperará hasta recibir EOS para generar reporte")
     
     try:
         def consume_messages():
@@ -214,19 +264,23 @@ if __name__ == "__main__":
                 mq_in.start_consuming(enhanced_on_message)
             except Exception as e:
                 if not shutdown_event.is_set():
-                    print(f"[AggregatorQuery1] ❌ Error consumiendo: {e}")
+                    print(f"[AggregatorQuery1] Error consumiendo: {e}")
         
         # Iniciar consumo en thread separado
         consumer_thread = threading.Thread(target=consume_messages)
         consumer_thread.daemon = True
         consumer_thread.start()
         
-        # Esperar hasta recibir EOS (sin timeout, espera indefinidamente)
-        shutdown_event.wait()
-        if eos_received.is_set():
-            print("[AggregatorQuery1] ✅ Terminando por EOS recibido")
-        else:
-            print("[AggregatorQuery1] ⚠️ Terminando por señal")
+        # Esperar indefinidamente - el worker NO termina después de EOS
+        # Solo termina por señal externa (SIGTERM, SIGINT)
+        print("[AggregatorQuery1] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        print("[AggregatorQuery1] El worker continuará procesando múltiples clientes")
+        
+        # Loop principal - solo termina por señal
+        while not shutdown_event.is_set():
+            time.sleep(1)
+        
+        print("[AggregatorQuery1] Terminando por señal externa")
             
     except KeyboardInterrupt:
         print("\n[AggregatorQuery1] Interrupción recibida")

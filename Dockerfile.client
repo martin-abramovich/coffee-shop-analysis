@@ -11,4 +11,4 @@ COPY client/ ./client/
 
 WORKDIR /app/client
 
-CMD ["python", "main.py"]
+ENTRYPOINT ["python", "main.py"]

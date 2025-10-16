@@ -4,6 +4,7 @@ import signal
 import threading
 from collections import defaultdict
 from datetime import datetime
+import time
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -94,26 +95,41 @@ def group_by_month_and_item(rows):
     
     return metrics
 
-# Control de EOS - necesitamos recibir EOS de todos los workers de filter_year
-eos_count = 0
+# Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
+eos_count = {}  # {session_id: count}
 eos_lock = threading.Lock()
 
 def on_message(body):
     global eos_count
     header, rows = deserialize_message(body)
+    session_id = header.get("session_id", "unknown")
     
     # Verificar si es mensaje de End of Stream
     if header.get("is_eos") == "true":
         with eos_lock:
-            eos_count += 1
-            print(f"[GroupByQuery2] EOS recibido ({eos_count}/{NUM_FILTER_YEAR_WORKERS})")
+            # Inicializar contador para esta sesión si no existe
+            if session_id not in eos_count:
+                eos_count[session_id] = 0
+            eos_count[session_id] += 1
+            print(f"[GroupByQuery2] EOS recibido para sesión {session_id} ({eos_count[session_id]}/{NUM_FILTER_YEAR_WORKERS})")
             
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year
-            if eos_count >= NUM_FILTER_YEAR_WORKERS:
-                print(f"[GroupByQuery2] ✅ EOS recibido de TODOS los workers. Reenviando downstream...")
-                eos_msg = serialize_message([], header)
+            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year para esta sesión
+            if eos_count[session_id] >= NUM_FILTER_YEAR_WORKERS:
+                print(f"[GroupByQuery2] EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
+                eos_msg = serialize_message([], header)  # Mantiene session_id en header
                 mq_out.send(eos_msg)
-                print("[GroupByQuery2] EOS reenviado a workers downstream")
+                print(f"[GroupByQuery2] EOS reenviado para sesión {session_id}")
+                
+                # Limpiar contador EOS para esta sesión después de un delay
+                def delayed_cleanup():
+                    time.sleep(30)  # Esperar 30 segundos antes de limpiar
+                    with eos_lock:
+                        if session_id in eos_count:
+                            del eos_count[session_id]
+                            print(f"[GroupByQuery2] Sesión {session_id} limpiada de contadores EOS")
+                
+                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+                cleanup_thread.start()
         return
     
     # Procesamiento normal
@@ -171,9 +187,9 @@ def on_message(body):
     unique_months = len(set(month for month, _ in month_item_metrics.keys()))
     unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
     
-    # Log más compacto
-    if batches_sent > 0:
-        print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items} qty={total_quantity} subtotal={total_subtotal:.2f}")
+    # Log compacto solo si hay datos significativos
+    # if batches_sent > 0 and len(month_item_metrics) > 100:
+    #     print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")

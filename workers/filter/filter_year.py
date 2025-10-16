@@ -99,50 +99,32 @@ def filter_by_year(rows):
 # Estadísticas globales para logging eficiente
 stats = {"processed": 0, "filtered": 0, "batches": 0}
 
-def on_message(body, source_queue):
-    header, rows = deserialize_message(body)
-    
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        print(f"[FilterYear] 🔚 EOS desde {source_queue}. Stats: {stats['batches']} batches, {stats['processed']} in, {stats['filtered']} out")
-        # Reenviar EOS a workers downstream usando los exchanges correctos
-        eos_msg = serialize_message([], header)
-        output_exchanges = OUTPUT_EXCHANGES[source_queue]
-        for exchange_name in output_exchanges:
-            mq_outputs[exchange_name].send(eos_msg)
-        return
-    
-    # Procesamiento normal
-    stats["batches"] += 1
-    stats["processed"] += len(rows)
-    filtered = filter_by_year(rows)
-    stats["filtered"] += len(filtered)
-    
-    if filtered:
-        out_msg = serialize_message(filtered, header)
-        output_exchanges = OUTPUT_EXCHANGES[source_queue]
-        for exchange_name in output_exchanges:
-            mq_outputs[exchange_name].send(out_msg)
-    
-    # Log solo cada 1000 batches
-    if stats["batches"] % 1000 == 0:
-        print(f"[FilterYear] {stats['batches']} batches | {stats['processed']} in | {stats['filtered']} out")
-
 if __name__ == "__main__":
     print(f"[FilterYear] Iniciando worker {WORKER_ID}...")
     
-    # Control de EOS - necesitamos recibir EOS de todas las fuentes
-    eos_received = set()
+    # Control de EOS por sesión - necesitamos recibir EOS de todas las fuentes para cada sesión
+    eos_received = {}  # {session_id: {source: True}}
     eos_lock = threading.Lock()
     shutdown_event = threading.Event()
     
-    def check_all_eos_received():
+    def check_session_eos_received(session_id, source):
         with eos_lock:
-            if len(eos_received) == len(INPUT_EXCHANGES):
-                print(f"[FilterYear Worker {WORKER_ID}] ✅ EOS recibido de todas las fuentes. Terminando...")
-                shutdown_event.set()
+            if session_id not in eos_received:
+                eos_received[session_id] = set()
+            eos_received[session_id].add(source)
+            
+            # Verificar si esta sesión completó todas las fuentes
+            if len(eos_received[session_id]) == len(INPUT_EXCHANGES):
+                print(f"[FilterYear Worker {WORKER_ID}] EOS recibido de todas las fuentes para sesión {session_id}")
                 return True
         return False
+    
+    def cleanup_completed_session(session_id):
+        """Limpia los datos de una sesión completada"""
+        with eos_lock:
+            if session_id in eos_received:
+                del eos_received[session_id]
+                print(f"[FilterYear Worker {WORKER_ID}] Sesión {session_id} limpiada")
     
     def signal_handler(signum, frame):
         print(f"[FilterYear Worker {WORKER_ID}] Señal {signum} recibida, cerrando...")
@@ -162,62 +144,67 @@ if __name__ == "__main__":
     mq_outputs_scalable = {}
     
     for input_exchange, destinations in OUTPUT_EXCHANGES.items():
-        # Exchanges escalables (round-robin)
         for exchange_name, num_workers in destinations["scalable"]:
             route_keys = [f"worker_{i}" for i in range(num_workers)] + ["eos"]
             raw_exchange = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
             mq_outputs_scalable[exchange_name] = RoundRobinExchange(raw_exchange, num_workers)
 
-    # Modificar on_message para manejar EOS correctamente
+    # Modificar on_message para manejar EOS correctamente por sesión
     def enhanced_on_message(body, source_exchange):
         header, rows = deserialize_message(body)
+        session_id = header.get("session_id", "unknown")
         
         # Verificar si es mensaje de End of Stream
         if header.get("is_eos") == "true":
-            print(f"[FilterYear Worker {WORKER_ID}] 🔚 EOS recibido desde {source_exchange}")
+            print(f"[FilterYear Worker {WORKER_ID}] EOS recibido desde {source_exchange} (sesión {session_id})")
             
-            with eos_lock:
-                eos_received.add(source_exchange)
-                print(f"[FilterYear Worker {WORKER_ID}] EOS recibido de: {eos_received} (esperando: {set(INPUT_EXCHANGES.keys())})")
+            # Verificar si esta sesión completó todas las fuentes
+            session_complete = check_session_eos_received(session_id, source_exchange)
             
-            # Reenviar EOS a workers downstream (broadcast a todos)
+            # Reenviar EOS a workers downstream
             eos_msg = serialize_message([], header)
             destinations = OUTPUT_EXCHANGES[source_exchange]
             
-            # EOS a exchanges escalables (broadcast)
+            # EOS a exchanges escalables
             for exchange_name, _ in destinations["scalable"]:
                 mq_outputs_scalable[exchange_name].send_eos(eos_msg)
             
-            print(f"[FilterYear Worker {WORKER_ID}] EOS enviado")
+            print(f"[FilterYear Worker {WORKER_ID}] EOS enviado para sesión {session_id}")
             
-            # Verificar si hemos recibido EOS de todas las fuentes
-            check_all_eos_received()
+            # Si esta sesión completó todas las fuentes, limpiar después de un delay
+            if session_complete:
+                # Programar limpieza de la sesión después de un delay
+                def delayed_cleanup():
+                    cleanup_completed_session(session_id)
+                
+                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+                cleanup_thread.start()
+            
+            # El worker continúa esperando más sesiones
             return
-        
-        # Procesamiento normal
+
         filtered = filter_by_year(rows)
         if filtered:
             out_msg = serialize_message(filtered, header)
             destinations = OUTPUT_EXCHANGES[source_exchange]
             
-            # Enviar a exchanges escalables (round-robin)
+            # Enviar a exchanges escalables
             for exchange_name, _ in destinations["scalable"]:
                 mq_outputs_scalable[exchange_name].send(out_msg)
 
     print(f"[*] FilterWorkerYear {WORKER_ID} esperando mensajes de {list(INPUT_EXCHANGES.keys())}...")
     print(f"[*] Routing keys: worker_{WORKER_ID} + eos")
-    print(f"[*] Necesita recibir EOS de todas las fuentes para terminar")
-    
+
     try:
         def consume_exchange(mq_in, exchange_name):
             try:
-                print(f"[FilterYear Worker {WORKER_ID}] 🚀 Iniciando consumo de {exchange_name}...")
+                print(f"[FilterYear Worker {WORKER_ID}] Iniciando consumo de {exchange_name}...")
                 def on_message_wrapper(body):
                     return enhanced_on_message(body, exchange_name)
                 mq_in.start_consuming(on_message_wrapper)
             except Exception as e:
                 if not shutdown_event.is_set():
-                    print(f"[FilterYear Worker {WORKER_ID}] ❌ Error consumiendo {exchange_name}: {e}")
+                    print(f"[FilterYear Worker {WORKER_ID}] Error consumiendo {exchange_name}: {e}")
         
         threads = []
         for mq_in, exchange_name in mq_connections:
@@ -226,9 +213,12 @@ if __name__ == "__main__":
             thread.start()
             threads.append(thread)
         
-        # Esperar hasta recibir EOS de todas las fuentes (sin timeout, espera indefinidamente)
-        shutdown_event.wait()
-        print(f"[FilterYear Worker {WORKER_ID}] ✅ Terminando por EOS completo o señal")
+        print(f"[FilterYear Worker {WORKER_ID}] Worker iniciado, esperando mensajes de múltiples sesiones...")
+        
+        while not shutdown_event.is_set():
+            time.sleep(1)
+        
+        print(f"[FilterYear Worker {WORKER_ID}] Terminando por señal externa")
             
     except KeyboardInterrupt:
         print(f"\n[FilterYear Worker {WORKER_ID}] Interrupción recibida")
@@ -247,7 +237,7 @@ if __name__ == "__main__":
         except:
             pass
         try:
-            for mq_out in mq_outputs.values():
+            for mq_out in mq_outputs_scalable.values():
                 mq_out.close()
         except:
             pass

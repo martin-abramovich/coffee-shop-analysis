@@ -341,12 +341,10 @@ services:
 
   # ==================== CLIENT ====================
   # El cliente se ejecuta manualmente cuando sea necesario
-  # docker-compose run --rm client
   client:
     build:
       context: .
       dockerfile: Dockerfile.client
-    container_name: coffee-client
     environment:
       GATEWAY_HOST: gateway
     depends_on:
@@ -357,6 +355,9 @@ services:
       - ./.data:/app/.data:ro # Montar datos como solo lectura
     profiles:
       - manual # No se inicia automáticamente
+    # Ejemplo de uso:
+    # docker-compose run --rm client --data-folder dataset1
+    # docker-compose run --rm client --data-folder dataset2 --verbose
 
 networks:
   coffee-network:

@@ -59,8 +59,8 @@ class MessageMiddlewareExchange(MessageMiddleware):
 		try:
 			parameters = pika.ConnectionParameters(
 				host=self.host,
-				heartbeat=300  # 5 minutos, mismo que el servidor
-			)
+				heartbeat=60*30  			
+    		)
 			self.connection = pika.BlockingConnection(parameters)
 			self.channel = self.connection.channel()
 			self.channel.exchange_declare(exchange=self.exchange_name, exchange_type="topic")
@@ -136,7 +136,7 @@ class MessageMiddlewareQueue(MessageMiddleware):
 		try:
 			parameters = pika.ConnectionParameters(
 				host=self.host,
-				heartbeat=300  # 5 minutos, mismo que el servidor
+				heartbeat=60*30
 			)
 			self.connection = pika.BlockingConnection(parameters)
 			self.channel = self.connection.channel()
