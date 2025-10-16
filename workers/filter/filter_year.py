@@ -73,7 +73,6 @@ OUTPUT_EXCHANGES = {
     },
     "transaction_items_raw": {
         "scalable": [
-            ("transaction_items_year", NUM_FILTER_HOUR_WORKERS),  # Para filter_hour
             ("transaction_items_year_query2", NUM_GROUP_BY_QUERY2_WORKERS)  # Para group_by_query2
         ],
         "broadcast": []  # Ya no hay broadcast

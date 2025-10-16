@@ -63,7 +63,6 @@ WORKER_ID = get_worker_id()
 # Exchanges de entrada - cada worker escucha su routing key específica + eos
 INPUT_EXCHANGES = {
     "transactions_year": [f"worker_{WORKER_ID}", "eos"],
-    "transaction_items_year": [f"worker_{WORKER_ID}", "eos"]
 }
 
 # Exchanges de salida - diferenciamos por destino (scalable = round-robin)
@@ -74,11 +73,6 @@ OUTPUT_EXCHANGES = {
             ("transactions_hour", NUM_GROUP_BY_QUERY3_WORKERS)  # Para group_by_query3
         ]
     },
-    "transaction_items_year": {
-        "scalable": [
-            ("transaction_items_hour", NUM_GROUP_BY_QUERY3_WORKERS)  # Para group_by_query3
-        ]
-    }
 }
 
 # Ventana horaria (inclusive)
