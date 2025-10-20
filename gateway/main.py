@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 LISTEN_HOST = "0.0.0.0"  # Para escuchar conexiones TCP
 PORT = 9000  # Puerto para recibir del cliente
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')  # Hostname de RabbitMQ
+MAX_CONCURRENT_CLIENTS = int(os.environ.get('MAX_CONCURRENT_CLIENTS', '5'))  # Límite de clientes concurrentes
 
 # Control de shutdown
 shutdown_event = threading.Event()
@@ -109,7 +110,7 @@ def main():
             signal.signal(signal.SIGTERM, signal_handler)
             signal.signal(signal.SIGINT, signal_handler)
             
-            logger.info("Gateway listo para múltiples clientes concurrentes")
+            logger.info(f"Gateway listo para múltiples clientes concurrentes (máximo: {MAX_CONCURRENT_CLIENTS})")
             
             while not shutdown_event.is_set():
                 try:
@@ -117,6 +118,25 @@ def main():
                     try:
                         conn, addr = s.accept()
                         logger.info(f"[GATEWAY] Nueva conexión desde {addr}")
+                        
+                        # Verificar límite de clientes concurrentes
+                        with sessions_lock:
+                            num_active_clients = len(active_sessions)
+                        
+                        if num_active_clients >= MAX_CONCURRENT_CLIENTS:
+                            # Rechazar la conexión
+                            logger.warning(f"[GATEWAY] Conexión rechazada desde {addr}: límite de {MAX_CONCURRENT_CLIENTS} clientes alcanzado ({num_active_clients} activos)")
+                            try:
+                                # Enviar mensaje de rechazo: 4 bytes longitud + mensaje
+                                reject_msg = f"REJECTED: Servidor lleno. Máximo {MAX_CONCURRENT_CLIENTS} clientes permitidos."
+                                payload = reject_msg.encode('utf-8')
+                                header = len(payload).to_bytes(4, byteorder='big')
+                                conn.sendall(header + payload)
+                            except Exception as e:
+                                logger.error(f"Error enviando mensaje de rechazo a {addr}: {e}")
+                            finally:
+                                conn.close()
+                            continue
                         
                         # Crear thread para manejar cliente
                         client_thread = threading.Thread(

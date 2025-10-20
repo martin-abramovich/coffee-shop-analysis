@@ -34,6 +34,7 @@ services:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
       NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
+      MAX_CONCURRENT_CLIENTS: ${MAX_CONCURRENT_CLIENTS:-5}
     depends_on:
       rabbitmq:
         condition: service_healthy

@@ -214,7 +214,7 @@ def csv_reader_thread(csv_files: List[str], batch_size: int, data_queue: queue.Q
         print(f"Error crítico en hilo lector: {e}")
         data_queue.put(('error', str(e), None))
 
-def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading.Event):
+def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading.Event, error_queue: queue.Queue = None):
     """
     Thread que envía los batches al servidor.
     """
@@ -257,10 +257,24 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
             except queue.Empty:
                 # Timeout normal, continuar verificando stop_event
                 continue
+            except ConnectionRefusedError as e:
+                # Conexión rechazada por el servidor - detener inmediatamente
+                print(f"\n❌ Conexión rechazada: {e}")
+                stop_event.set()
+                if error_queue:
+                    error_queue.put(('connection_refused', e))
+                return
             except Exception as e:
                 if "proceso de cierre" in str(e):
                     print(f"Cierre ordenado durante envío: {e}")
                     break
+                elif "REJECTED" in str(e):
+                    # Error de rechazo - detener inmediatamente
+                    print(f"\n❌ {e}")
+                    stop_event.set()
+                    if error_queue:
+                        error_queue.put(('connection_refused', ConnectionRefusedError(str(e))))
+                    return
                 else:
                     print(f"Error enviando batch: {e}")
                     # En caso de error de envío, seguir intentando con los siguientes
@@ -269,8 +283,14 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
         if VERBOSE:
             print(f"Hilo enviador terminado. Total enviado: {total_batches_sent} batches, {total_entities_sent} entidades")
         
+    except ConnectionRefusedError as e:
+        # Propagar el error de rechazo a través de la cola
+        if error_queue:
+            error_queue.put(('connection_refused', e))
     except Exception as e:
         print(f"Error crítico en hilo enviador: {e}")
+        if error_queue:
+            error_queue.put(('error', e))
 
 def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client):
     """
@@ -281,6 +301,7 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
     
     # Cola para comunicar entre threads
     data_queue = queue.Queue(maxsize=50)  # Limitar tamaño para evitar usar mucha memoria
+    error_queue = queue.Queue()  # Cola para errores de los threads
     stop_event = threading.Event()
     
     # Crear threads
@@ -292,7 +313,7 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
     
     sender_thread_obj = threading.Thread(
         target=sender_thread,
-        args=(client, data_queue, stop_event),
+        args=(client, data_queue, stop_event, error_queue),
         name="DataSender"
     )
     
@@ -304,6 +325,14 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
         # Esperar a que terminen
         reader_thread.join()
         sender_thread_obj.join()
+        
+        # Verificar si hubo errores en los threads
+        if not error_queue.empty():
+            error_type, error = error_queue.get()
+            if error_type == 'connection_refused':
+                raise error
+            else:
+                raise error
         
         if VERBOSE:
             print("Procesamiento threaded completado")
@@ -404,6 +433,13 @@ def main():
         
     except KeyboardInterrupt:
         print(f"\nInterrupción por teclado (Ctrl+C)")
+        return 1
+    except ConnectionRefusedError as e:
+        # Error específico cuando el servidor rechaza la conexión por estar lleno
+        print(f"\n❌ Conexión rechazada por el servidor:")
+        print(f"   {e}")
+        print(f"\n   El servidor ha alcanzado su límite de clientes concurrentes.")
+        print(f"   Por favor, intenta nuevamente más tarde.")
         return 1
     except (FileNotFoundError, ValueError) as e:
         print(f"Error de configuración: {e}")

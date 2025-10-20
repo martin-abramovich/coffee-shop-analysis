@@ -7,6 +7,7 @@ Sistema distribuido para análisis de datos de coffee shops con soporte para mú
 ### ✅ Soporte para Múltiples Clientes Concurrentes
 - **Múltiples ejecuciones** sin reinicio del servidor
 - **Múltiples clientes** ejecutándose concurrentemente
+- **Límite de clientes concurrentes** configurable para control de carga
 - **Protocolo EOF robusto** para coordinación N clientes -> M workers
 - **Limpieza correcta** de recursos después de cada ejecución
 - **Logs de depuración** detallados para visibilidad del protocolo
@@ -42,6 +43,43 @@ python client/multi_session_client.py
 ```bash
 # Ejecutar demostración completa de todas las mejoras
 python demo_multiple_clients.py
+```
+
+## ⚙️ Configuración
+
+### Límite de Clientes Concurrentes
+
+El gateway tiene un límite configurable de clientes concurrentes para controlar la carga del sistema. Por defecto, permite **5 clientes concurrentes**.
+
+**Para configurar el límite:**
+
+1. **Opción 1: Variable de entorno**
+   ```bash
+   export MAX_CONCURRENT_CLIENTS=10
+   docker-compose up --build gateway
+   ```
+
+2. **Opción 2: Modificar docker-compose.yml**
+   ```yaml
+   gateway:
+     environment:
+       MAX_CONCURRENT_CLIENTS: 10
+   ```
+
+3. **Opción 3: Archivo .env**
+   ```bash
+   # Crear archivo .env en la raíz del proyecto
+   MAX_CONCURRENT_CLIENTS=10
+   ```
+
+**Comportamiento cuando se alcanza el límite:**
+- El gateway rechazará nuevas conexiones con un mensaje claro
+- El cliente rechazado terminará automáticamente con código de error 1
+- Los clientes recibirán el mensaje: "REJECTED: Servidor lleno. Máximo X clientes permitidos."
+
+**Logs del gateway:**
+```
+[GATEWAY] Conexión rechazada desde 172.20.0.5: límite de 5 clientes alcanzado (5 activos)
 ```
 
 ## 📋 Para Ejecutar el Sistema
@@ -207,6 +245,15 @@ El sistema incluye un gestor de recursos que:
 ### El gateway no acepta múltiples clientes
 - Verificar que se esté usando la versión actualizada del código
 - Revisar logs del gateway para errores de threading
+
+### Cliente rechazado por límite de conexiones
+**Síntoma**: El cliente muestra "❌ Conexión rechazada por el servidor: REJECTED: Servidor lleno..."
+
+**Solución**:
+1. Verificar cuántos clientes están conectados actualmente
+2. Esperar a que terminen algunos clientes antes de intentar nuevamente
+3. Aumentar el límite `MAX_CONCURRENT_CLIENTS` si es necesario
+4. Revisar logs del gateway para ver clientes activos: `docker-compose logs gateway | grep "Sesiones activas"`
 
 ### Workers no reciben EOF correctamente
 - Verificar logs del protocolo EOF en el gateway
