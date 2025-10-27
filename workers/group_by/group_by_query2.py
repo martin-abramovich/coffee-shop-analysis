@@ -98,10 +98,11 @@ def group_by_month_and_item(rows):
 # Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
 eos_count = {}  # {session_id: count}
 eos_lock = threading.Lock()
-batch_send = 0 
+batches_sent = 0 
 
 def on_message(body):
     global eos_count
+    global batches_sent
     header, rows = deserialize_message(body)
     session_id = header.get("session_id", "unknown")
     
@@ -138,7 +139,6 @@ def on_message(body):
     month_item_metrics = group_by_month_and_item(rows)
     
     batch_records = []
-    
     for (month, item_id), metrics in month_item_metrics.items():
         if metrics['total_quantity'] > 0 or metrics['total_subtotal'] > 0:
             # Crear un registro único con las métricas de (mes, item_id)
@@ -156,13 +156,13 @@ def on_message(body):
     
     out_msg = serialize_message(batch_records, batch_header)
     mq_out.send(out_msg)
-    
+    batches_sent += 1
+   
     unique_months = len(set(month for month, _ in month_item_metrics.keys()))
     unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
-    batches_sent += 1
     
     # Log compacto solo si hay datos significativos
-    if batches_sent <= 3 or batch_send % 10000 == 0:
+    if batches_sent <= 3 or batches_sent % 10000 == 0:
         print(f"[GroupByQuery2] in={len(batch_records)} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@ test_files/*
 __pycache__/ 
 **/__pycache__/
 .data/*/
+data
+.data completa
 !.data/dataset.zip
 results/*
 !results/results_expected.csv/
