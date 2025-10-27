@@ -98,6 +98,7 @@ def group_by_month_and_item(rows):
 # Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
 eos_count = {}  # {session_id: count}
 eos_lock = threading.Lock()
+batch_send = 0 
 
 def on_message(body):
     global eos_count
@@ -132,18 +133,11 @@ def on_message(body):
                 cleanup_thread.start()
         return
     
-    # Procesamiento normal
-    total_in = len(rows)
     
     # Agrupar por (mes, item_id) y calcular métricas
     month_item_metrics = group_by_month_and_item(rows)
     
-    # OPTIMIZACIÓN: Enviar de a BATCHES de 1000 registros para evitar mensajes individuales
-    BATCH_SIZE = 1000
     batch_records = []
-    batches_sent = 0
-    total_quantity = 0
-    total_subtotal = 0.0
     
     for (month, item_id), metrics in month_item_metrics.items():
         if metrics['total_quantity'] > 0 or metrics['total_subtotal'] > 0:
@@ -155,41 +149,21 @@ def on_message(body):
                 'total_subtotal': metrics['total_subtotal']
             }
             batch_records.append(query2_record)
-            total_quantity += metrics['total_quantity']
-            total_subtotal += metrics['total_subtotal']
-            
-            # Enviar cuando alcanzamos el tamaño del batch
-            if len(batch_records) >= BATCH_SIZE:
-                batch_header = header.copy() if header else {}
-                batch_header["group_by"] = "month_item"
-                batch_header["batch_size"] = str(len(batch_records))
-                batch_header["metrics_type"] = "query2_aggregated"
-                batch_header["batch_type"] = "grouped_metrics"
-                
-                out_msg = serialize_message(batch_records, batch_header)
-                mq_out.send(out_msg)
-                batches_sent += 1
-                batch_records = []  # Limpiar para el siguiente batch
+
     
-    # Enviar batch residual si queda algo
-    if batch_records:
-        batch_header = header.copy() if header else {}
-        batch_header["group_by"] = "month_item"
-        batch_header["batch_size"] = str(len(batch_records))
-        batch_header["metrics_type"] = "query2_aggregated"
-        batch_header["batch_type"] = "grouped_metrics"
-        batch_header["is_last_chunk"] = "true"
-        
-        out_msg = serialize_message(batch_records, batch_header)
-        mq_out.send(out_msg)
-        batches_sent += 1
+    batch_header = header.copy() if header else {}
+    batch_header["batch_size"] = str(len(batch_records))
+    
+    out_msg = serialize_message(batch_records, batch_header)
+    mq_out.send(out_msg)
     
     unique_months = len(set(month for month, _ in month_item_metrics.keys()))
     unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
+    batches_sent += 1
     
     # Log compacto solo si hay datos significativos
-    # if batches_sent > 0 and len(month_item_metrics) > 100:
-    #     print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
+    if batches_sent <= 3 or batch_send % 10000 == 0:
+        print(f"[GroupByQuery2] in={len(batch_records)} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")
