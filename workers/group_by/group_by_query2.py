@@ -134,7 +134,8 @@ def on_message(body):
                 cleanup_thread.start()
         return
     
-    
+    total_in = len(rows)
+     
     # Agrupar por (mes, item_id) y calcular métricas
     month_item_metrics = group_by_month_and_item(rows)
     
@@ -158,12 +159,13 @@ def on_message(body):
     mq_out.send(out_msg)
     batches_sent += 1
    
-    unique_months = len(set(month for month, _ in month_item_metrics.keys()))
-    unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
     
     # Log compacto solo si hay datos significativos
     if batches_sent <= 3 or batches_sent % 10000 == 0:
-        print(f"[GroupByQuery2] in={len(batch_records)} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
+        unique_months = len(set(month for month, _ in month_item_metrics.keys()))
+        unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
+        
+        print(f"[GroupByQuery2] batches_sent={batches_sent} in={total_in} created={len(month_item_metrics)} months={unique_months} items={unique_items}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")

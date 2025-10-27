@@ -68,9 +68,11 @@ def group_by_store_and_user(rows):
 # Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
 eos_count = {}  # {session_id: count}
 eos_lock = threading.Lock()
+batches_sent = 0 
 
 def on_message(body):
     global eos_count
+    global batches_sent
     header, rows = deserialize_message(body)
     session_id = header.get("session_id", "unknown")
     
@@ -108,12 +110,7 @@ def on_message(body):
     # Agrupar por (store_id, user_id) y contar transacciones
     store_user_metrics = group_by_store_and_user(rows)
     
-    # OPTIMIZACIÓN: Enviar de a BATCHES de 100 registros para evitar mensajes gigantes
-    BATCH_SIZE = 1000
     batch_records = []
-    total_transactions = 0
-    batches_sent = 0
-    
     for (store_id, user_id), metrics in store_user_metrics.items():
         if metrics['transaction_count'] > 0:
             # Crear un registro único con las métricas de (store, user)
@@ -123,38 +120,21 @@ def on_message(body):
                 'transaction_count': metrics['transaction_count']
             }
             batch_records.append(query4_record)
-            total_transactions += metrics['transaction_count']
-            
-            # Enviar cuando alcanzamos el tamaño del batch
-            if len(batch_records) >= BATCH_SIZE:
-                batch_header = header.copy() if header else {}
-                batch_header["group_by"] = "store_user"
-                batch_header["batch_size"] = str(len(batch_records))
-                batch_header["metrics_type"] = "query4_aggregated"
-                batch_header["batch_type"] = "grouped_metrics"
-                
-                out_msg = serialize_message(batch_records, batch_header)
-                mq_out.send(out_msg)
-                batches_sent += 1
-                batch_records = []  # Limpiar para el siguiente batch
     
-    # Enviar batch residual si queda algo
-    if batch_records:
-        batch_header = header.copy() if header else {}
-        batch_header["group_by"] = "store_user"
-        batch_header["batch_size"] = str(len(batch_records))
-        batch_header["metrics_type"] = "query4_aggregated"
-        batch_header["batch_type"] = "grouped_metrics"
-        batch_header["is_last_chunk"] = "true"
+    
+    batch_header = header.copy() if header else {}
+    batch_header["batch_size"] = str(len(batch_records))
+    
+    out_msg = serialize_message(batch_records, batch_header)
+    mq_out.send(out_msg)
+    batches_sent += 1
+
+    
+    if batches_sent <= 3 or batches_sent % 10000 == 0:
+        unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
+        unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
         
-        out_msg = serialize_message(batch_records, batch_header)
-        mq_out.send(out_msg)
-        batches_sent += 1
-    
-    unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
-    unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
-    
-    #print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent={batches_sent}_batches stores={unique_stores} users={unique_users} tx_total={total_transactions}")
+        print(f"[GroupByQuery4] batches_sent={batches_sent} in={total_in} created={len(store_user_metrics)} stores={unique_stores} users={unique_users}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery4] Iniciando worker {WORKER_ID}...")
