@@ -90,7 +90,6 @@ class Client:
                 finally:
                     self.sock.close()
                     self.sock = None
-                    print("✓ Conexión cerrada correctamente")
 
     def is_shutdown_requested(self) -> bool:
         """Verifica si se solicitó el cierre"""
