@@ -315,15 +315,15 @@ def dict_to_menu_item(row: dict) -> MenuItem:
 def detect_entity_type_from_filename(filename: str) -> str:
     """Detecta el tipo de entidad basado en el nombre del archivo"""
     filename_lower = filename.lower()
-    if 'transaction_item' in filename_lower or 'trans_item' in filename_lower:
+    if 'transaction_items' in filename_lower:
         return 'transaction_items'
-    elif 'transaction' in filename_lower or 'trans' in filename_lower:
+    elif 'transactions' in filename_lower:
         return 'transactions'
-    elif 'user' in filename_lower:
+    elif 'users' in filename_lower:
         return 'users'
-    elif 'store' in filename_lower or 'shop' in filename_lower:
+    elif 'stores' in filename_lower:
         return 'stores'
-    elif 'menu' in filename_lower or 'item' in filename_lower:
+    elif 'menu_items' in filename_lower:
         return 'menu_items'
     else:
         raise ValueError(f"No se pudo detectar el tipo de entidad para el archivo: {filename}")
@@ -360,25 +360,13 @@ def dict_to_entity(row: dict, entity_type: str) -> Union[Transactions, Transacti
     
     return converters[entity_type](row)
 
-def entity_batch_iterator(csv_path: str, batch_size: int, entity_type: str = None):
+def entity_batch_iterator(csv_path: str, batch_size: int, entity_type: str):
     """
     Lee un CSV y genera batches de entidades del tipo especificado.
     Si entity_type es None, intenta detectarlo automáticamente.
     """
     with open(csv_path, newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
-        
-        # Detectar tipo de entidad si no se especifica
-        if entity_type is None:
-            # Leer primera fila para detectar tipo
-            try:
-                first_row = next(reader)
-                entity_type = detect_entity_type_from_headers(reader.fieldnames)
-                # Volver al inicio del archivo
-                f.seek(0)
-                reader = csv.DictReader(f)
-            except StopIteration:
-                return  # Archivo vacío
         
         batch = []
         for row in reader:
