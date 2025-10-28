@@ -1,7 +1,6 @@
 import socket
 import threading
 from typing import List, Union
-from .protocol import encode_batch
 from .entities import Transactions, TransactionItems, Users, Stores, MenuItem
 
 class Client:
@@ -17,7 +16,7 @@ class Client:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect((self.host, self.port))
 
-    def send_batch(self, entities: List[Union[Transactions, TransactionItems, Users, Stores, MenuItem]]):
+    def send_batch(self, batch):
         """
         Envía un batch de entidades del mismo tipo usando el protocolo binario.
         """
@@ -28,15 +27,8 @@ class Client:
             if not self.sock:
                 raise RuntimeError("Cliente no conectado. Llama connect() primero.")
             
-            data = encode_batch(entities)
-            self.sock.sendall(data)
+            self.sock.sendall(batch)
 
-    def send_batches(self, batches: List[List[Union[Transactions, TransactionItems, Users, Stores, MenuItem]]]):
-        """
-        Envía múltiples batches de entidades.
-        """
-        for batch in batches:
-            self.send_batch(batch)
 
     def receive_response(self) -> str:
         """

@@ -12,6 +12,72 @@ ENTITY_TYPES = {
     'menu_items': 4
 }
 
+ITEM_INDEX = {
+    'item_id': 0,
+    'item_name': 1,
+    'category': 2,
+    'price': 3,
+    'is_seasonal': 4,
+    'available_from': 5,
+    'available_to': 6,
+}
+
+STORE_INDEX = {
+    "store_id": 0,
+    "store_name": 1,
+    "street": 2,
+    "postal_code": 3,
+    "city": 4,
+    "state": 5,
+    "latitude": 6,
+    "longitud": 7,
+}
+
+TRANSACTION_ITEM_INDEX = {
+    "transaction_id":0,
+    "item_id":1,
+    "quantity":2,
+    "unit_price":3,
+    "subtotal":4,
+    "created_at":5,
+}
+
+TRANSACTION_INDEX = {
+    "transaction_id": 0,
+    "store_id": 1,
+    "payment_method_id": 2,
+    "voucher_id": 3,
+    "user_id": 4,
+    "original_amount": 5,
+    "discount_applied": 6,
+    "final_amount": 7,
+    "created_at": 8,
+}
+
+USER_INDEX = {
+    "user_id": 0,
+    "gender": 1,
+    "birthdate": 2,
+    "registered_at": 3,
+}
+
+def detect_entity_type_from_filename(filename: str) -> str:
+    """Detecta el tipo de entidad basado en el nombre del archivo"""
+    filename_lower = filename.lower()
+    if 'transaction_items' in filename_lower:
+        return 'transaction_items'
+    elif 'transactions' in filename_lower:
+        return 'transactions'
+    elif 'users' in filename_lower:
+        return 'users'
+    elif 'stores' in filename_lower:
+        return 'stores'
+    elif 'menu_items' in filename_lower:
+        return 'menu_items'
+    else:
+        raise ValueError(f"No se pudo detectar el tipo de entidad para el archivo: {filename}")
+
+
 def encode_string(s: str) -> bytes:
     """Codifica un string: 4 bytes para tamaño + string en UTF-8"""
     s_bytes = s.encode('utf-8')
@@ -97,288 +163,157 @@ def encode_bool(b: bool) -> bytes:
     """Codifica bool como 1 byte"""
     return (1 if b else 0).to_bytes(1, byteorder='big', signed=False)
 
-def encode_transaction(trans: Transactions) -> bytes:
-    """Codifica una transacción"""
-    data = b''
-    data += encode_string(trans.transaction_id)
-    data += encode_string(trans.store_id)
-    data += encode_string(trans.payment_method)
-    data += encode_string(trans.voucher_id)
-    data += encode_string(trans.user_id)
-    data += encode_float(trans.original_amount)
-    data += encode_float(trans.discount_applied)
-    data += encode_float(trans.final_amount)
-    data += encode_datetime(trans.created_at)
-    return data
-
-def encode_transaction_item(item: TransactionItems) -> bytes:
-    """Codifica un item de transacción"""
-    data = b''
-    data += encode_string(item.transaction_id)
-    data += encode_string(item.item_id)
-    data += encode_int(item.quantity)
-    data += encode_float(item.unit_price)
-    data += encode_float(item.subtotal)
-    data += encode_datetime(item.created_at)
-    return data
-
-def encode_user(user: Users) -> bytes:
-    """Codifica un usuario"""
-    data = b''
-    data += encode_string(user.user_id)
-    data += encode_string(user.gender)
-    data += encode_date(user.birthdate)
-    data += encode_datetime(user.registered_at)
-    return data
-
-def encode_store(store: Stores) -> bytes:
-    """Codifica una tienda"""
-    data = b''
-    data += encode_string(store.store_id)
-    data += encode_string(store.store_name)
-    data += encode_string(store.street)
-    data += encode_string(store.postal_code)
-    data += encode_string(store.city)
-    data += encode_string(store.state)
-    data += encode_float(store.latitude)
-    data += encode_float(store.longitude)
-    return data
-
-def encode_menu_item(menu_item: MenuItem) -> bytes:
-    """Codifica un item del menú"""
-    data = b''
-    data += encode_string(menu_item.item_id)
-    data += encode_string(menu_item.item_name)
-    data += encode_string(menu_item.category)
-    data += encode_float(menu_item.price)
-    data += encode_bool(menu_item.is_seasonal)
-    
-    # Manejar fechas opcionales
-    if menu_item.available_from:
-        data += encode_bool(True)  # Tiene fecha from
-        data += encode_date(menu_item.available_from)
-    else:
-        data += encode_bool(False)  # No tiene fecha from
-    
-    if menu_item.available_to:
-        data += encode_bool(True)  # Tiene fecha to
-        data += encode_date(menu_item.available_to)
-    else:
-        data += encode_bool(False)  # No tiene fecha to
-    
-    return data
-
-def encode_entity(entity) -> bytes:
-    """Codifica una entidad según su tipo"""
-    if isinstance(entity, Transactions):
-        return encode_transaction(entity)
-    elif isinstance(entity, TransactionItems):
-        return encode_transaction_item(entity)
-    elif isinstance(entity, Users):
-        return encode_user(entity)
-    elif isinstance(entity, Stores):
-        return encode_store(entity)
-    elif isinstance(entity, MenuItem):
-        return encode_menu_item(entity)
-    else:
-        raise ValueError(f"Tipo de entidad no soportado: {type(entity)}")
-
-def get_entity_type(entity) -> int:
-    """Obtiene el tipo numérico de una entidad"""
-    if isinstance(entity, Transactions):
-        return ENTITY_TYPES['transactions']
-    elif isinstance(entity, TransactionItems):
-        return ENTITY_TYPES['transaction_items']
-    elif isinstance(entity, Users):
-        return ENTITY_TYPES['users']
-    elif isinstance(entity, Stores):
-        return ENTITY_TYPES['stores']
-    elif isinstance(entity, MenuItem):
-        return ENTITY_TYPES['menu_items']
-    else:
-        raise ValueError(f"Tipo de entidad no soportado: {type(entity)}")
-
-def encode_batch(entities: List[Union[Transactions, TransactionItems, Users, Stores, MenuItem]]) -> bytes:
-    """
-    Codifica un batch de entidades del mismo tipo.
-    Formato: [4 bytes: cantidad][1 byte: tipo][datos de entidades...]
-    """
-    if not entities:
-        return (0).to_bytes(4, byteorder='big', signed=False) + (0).to_bytes(1, byteorder='big', signed=False)  # Batch vacío
-    
-    # Verificar que todas las entidades sean del mismo tipo
-    entity_type = get_entity_type(entities[0])
-
-    
-    # Codificar header
-    data = len(entities).to_bytes(4, byteorder='big', signed=False)  # 4 bytes: cantidad
-    data += entity_type.to_bytes(1, byteorder='big', signed=False)    # 1 byte: tipo
-    
-    # Codificar entidades
-    for entity in entities:
-        data += encode_entity(entity)
-    
-    return data
-
-def parse_datetime(dt_str: str) -> datetime:
-    """Parsea un string de datetime en formato ISO"""
-    try:
-        return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-    except ValueError:
-        # Intentar otros formatos comunes
-        try:
-            return datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
-        except ValueError:
-            return datetime.strptime(dt_str, '%Y-%m-%d')
-
-def parse_date(date_str: str) -> date:
-    """Parsea un string de fecha"""
-    try:
-        return datetime.strptime(date_str, '%Y-%m-%d').date()
-    except ValueError:
-        return datetime.fromisoformat(date_str).date()
-
-def parse_bool(bool_str: str) -> bool:
     """Parsea un string a booleano"""
     return bool_str.lower() in ('true', '1', 'yes', 'y')
 
-def parse_optional_date(date_str: str) -> Optional[date]:
     """Parsea una fecha opcional"""
     if not date_str or date_str.strip() == '':
         return None
     return parse_date(date_str)
 
-def dict_to_transaction(row: dict) -> Transactions:
-    """Convierte un dict de CSV a objeto Transactions"""
-    # Aceptar tanto 'payment_method' como 'payment_method_id'
-    payment_method_value = row.get('payment_method')
-    if payment_method_value is None:
-        payment_method_value = row.get('payment_method_id', '')
+def encode_date_str(date_str: str) -> bytes:
+    """Convierte un string 'YYYY-MM-DD' a 8 bytes timestamp"""
+    try:
+        y, m, d = map(int, date_str.split('-'))
+        ts = int(datetime(y, m, d).timestamp())
+        if ts < 0:
+            ts = 0
+        return ts.to_bytes(8, 'big', signed=False)
+    except Exception:
+        return (0).to_bytes(8, 'big', signed=False)
 
-    return Transactions(
-        transaction_id=row['transaction_id'],
-        store_id=row['store_id'],
-        payment_method=payment_method_value,
-        voucher_id=row.get('voucher_id', ''),
-        user_id=row.get('user_id', ''),
-        original_amount=float(row['original_amount']),
-        discount_applied=float(row['discount_applied']),
-        final_amount=float(row['final_amount']),
-        created_at=parse_datetime(row['created_at'])
-    )
+def encode_datetime_str(datetime_str: str) -> bytes:
+    """Convierte un string 'YYYY-MM-DD HH:MM:SS' a 8 bytes timestamp"""
+    try:
+        # Intentar con formato completo
+        dt = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+        ts = int(dt.timestamp())
+        if ts < 0:
+            ts = 0
+        return ts.to_bytes(8, 'big', signed=False)
+    except Exception:
+        # Intentar solo fecha si falla
+        try:
+            return encode_date_str(datetime_str)
+        except Exception:
+            return (0).to_bytes(8, 'big', signed=False)
 
-def dict_to_transaction_item(row: dict) -> TransactionItems:
-    """Convierte un dict de CSV a objeto TransactionItems"""
-    return TransactionItems(
-        transaction_id=row['transaction_id'],
-        item_id=row['item_id'],
-        quantity=int(row['quantity']),
-        unit_price=float(row['unit_price']),
-        subtotal=float(row['subtotal']),
-        created_at=parse_datetime(row['created_at'])
-    )
+def encode_transaction(row: list) -> bytes:
+    idx = TRANSACTION_INDEX
+    data = b''
+    data += encode_string(row[idx['transaction_id']])
+    data += encode_string(row[idx['store_id']])
+    data += encode_string(row[idx['payment_method_id']])
+    data += encode_string(row[idx['voucher_id']])
+    data += encode_string(row[idx['user_id']])
+    data += encode_float(float(row[idx['original_amount']]))
+    data += encode_float(float(row[idx['discount_applied']]))
+    data += encode_float(float(row[idx['final_amount']]))
+    data += encode_datetime_str(row[idx['created_at']])
+    return data
 
-def dict_to_user(row: dict) -> Users:
-    """Convierte un dict de CSV a objeto Users"""
-    return Users(
-        user_id=row['user_id'],
-        gender=row['gender'],
-        birthdate=parse_date(row['birthdate']),
-        registered_at=parse_datetime(row['registered_at'])
-    )
 
-def dict_to_store(row: dict) -> Stores:
-    """Convierte un dict de CSV a objeto Stores"""
-    return Stores(
-        store_id=row['store_id'],
-        store_name=row['store_name'],
-        street=row['street'],
-        postal_code=row['postal_code'],
-        city=row['city'],
-        state=row['state'],
-        latitude=float(row['latitude']),
-        longitude=float(row['longitude'])
-    )
+def encode_transaction_item(row: list) -> bytes:
+    idx = TRANSACTION_ITEM_INDEX
+    data = b''
+    data += encode_string(row[idx['transaction_id']])
+    data += encode_string(row[idx['item_id']])
+    data += encode_int(int(row[idx['quantity']]))
+    data += encode_float(float(row[idx['unit_price']]))
+    data += encode_float(float(row[idx['subtotal']]))
+    data += encode_datetime_str(row[idx['created_at']])
+    return data
 
-def dict_to_menu_item(row: dict) -> MenuItem:
-    """Convierte un dict de CSV a objeto MenuItem"""
-    return MenuItem(
-        item_id=row['item_id'],
-        item_name=row['item_name'],
-        category=row['category'],
-        price=float(row['price']),
-        is_seasonal=parse_bool(row['is_seasonal']),
-        available_from=parse_optional_date(row.get('available_from', '')),
-        available_to=parse_optional_date(row.get('available_to', ''))
-    )
 
-def detect_entity_type_from_filename(filename: str) -> str:
-    """Detecta el tipo de entidad basado en el nombre del archivo"""
-    filename_lower = filename.lower()
-    if 'transaction_items' in filename_lower:
-        return 'transaction_items'
-    elif 'transactions' in filename_lower:
-        return 'transactions'
-    elif 'users' in filename_lower:
-        return 'users'
-    elif 'stores' in filename_lower:
-        return 'stores'
-    elif 'menu_items' in filename_lower:
-        return 'menu_items'
-    else:
-        raise ValueError(f"No se pudo detectar el tipo de entidad para el archivo: {filename}")
+def encode_user(row: list) -> bytes:
+    idx = USER_INDEX
+    data = b''
+    data += encode_string(row[idx['user_id']])
+    data += encode_string(row[idx['gender']])
+    data += encode_date_str(row[idx['birthdate']])
+    data += encode_datetime_str(row[idx['registered_at']])
+    return data
 
-def detect_entity_type_from_headers(headers: List[str]) -> str:
-    """Detecta el tipo de entidad basado en las columnas del CSV"""
-    headers_set = set(h.lower() for h in headers)
+
+def encode_store(row: list) -> bytes:
+    """Codifica una tienda desde una fila CSV"""
+    idx = STORE_INDEX
+    data = b''
+    data += encode_string(row[idx['store_id']])
+    data += encode_string(row[idx['store_name']])
+    data += encode_string(row[idx['street']])
+    data += encode_string(row[idx['postal_code']])
+    data += encode_string(row[idx['city']])
+    data += encode_string(row[idx['state']])
+    data += encode_float(float(row[idx['latitude']]))
+    data += encode_float(float(row[idx['longitud']]))  # corregido: longitud, no longitude
+    return data
     
-    if 'transaction_id' in headers_set and 'item_id' in headers_set and 'quantity' in headers_set:
-        return 'transaction_items'
-    elif 'transaction_id' in headers_set and 'store_id' in headers_set and ('payment_method' in headers_set or 'payment_method_id' in headers_set):
-        return 'transactions'
-    elif 'user_id' in headers_set and 'gender' in headers_set and 'birthdate' in headers_set:
-        return 'users'
-    elif 'store_id' in headers_set and 'store_name' in headers_set and 'latitude' in headers_set:
-        return 'stores'
-    elif 'item_id' in headers_set and 'item_name' in headers_set and 'category' in headers_set:
-        return 'menu_items'
-    else:
-        raise ValueError(f"No se pudo detectar el tipo de entidad para las columnas: {headers}")
+def encode_item(row: list) -> bytes:
+    idx = ITEM_INDEX
+    data = b''
+    data += encode_string(row[idx['item_id']])
+    data += encode_string(row[idx['item_name']])
+    data += encode_string(row[idx['category']])
+    data += encode_float(float(row[idx['price']]))
+    data += encode_bool(row[idx['is_seasonal']].lower() == 'true')
 
-def dict_to_entity(row: dict, entity_type: str) -> Union[Transactions, TransactionItems, Users, Stores, MenuItem]:
-    """Convierte un dict a la entidad correspondiente"""
-    converters = {
-        'transactions': dict_to_transaction,
-        'transaction_items': dict_to_transaction_item,
-        'users': dict_to_user,
-        'stores': dict_to_store,
-        'menu_items': dict_to_menu_item
-    }
+    for key in ['available_from', 'available_to']:
+        val = row[idx[key]].strip()
+        if val:
+            data += encode_bool(True)
+            data += encode_date_str(val)
+        else:
+            data += encode_bool(False)
+
+    return data
     
-    if entity_type not in converters:
+def encode_row(row:dict, entity_type:str): 
+    if entity_type == "transactions": 
+        return encode_transaction(row)
+    elif entity_type == 'transaction_items':
+        return encode_transaction_item(row)
+    elif entity_type == "users": 
+        return encode_user(row)
+    elif entity_type == "stores": 
+        return encode_store(row)
+    elif entity_type == "menu_items":
+        return encode_item(row)
+    else: 
         raise ValueError(f"Tipo de entidad no soportado: {entity_type}")
-    
-    return converters[entity_type](row)
-
+         
 def entity_batch_iterator(csv_path: str, batch_size: int, entity_type: str):
     """
-    Lee un CSV y genera batches de entidades del tipo especificado.
-    Si entity_type es None, intenta detectarlo automáticamente.
+    Lee un CSV y genera batches binarios de entidades del tipo especificado.
+    batch_size: número máximo de filas por batch
     """
+    type_code = ENTITY_TYPES.get(entity_type)
+    
     with open(csv_path, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        
-        batch = []
+        reader = csv.reader(f)
+        _headers = next(reader)  # descarta encabezados
+
+        batch_data = bytearray()
+        count = 0
+
         for row in reader:
             try:
-                entity = dict_to_entity(row, entity_type)
-                batch.append(entity)
-                if len(batch) >= batch_size:
-                    yield batch
-                    batch = []
+                entity_bytes = encode_row(row, entity_type)
+                batch_data.extend(entity_bytes) 
+                count += 1
+
+                if count >= batch_size:
+                    # header: [4 bytes count][1 byte type]
+                    header = count.to_bytes(4, 'big') + type_code.to_bytes(1, 'big')
+                    yield bytes(header + batch_data)
+                    batch_data.clear()
+                    count = 0
+
             except (ValueError, KeyError) as e:
                 print(f"Advertencia: Error procesando fila {row}: {e}")
                 continue
-        
-        if batch:
-            yield batch
+
+        if count > 0:
+            header = count.to_bytes(4, 'big') + type_code.to_bytes(1, 'big')
+            yield bytes(header + batch_data)
+            

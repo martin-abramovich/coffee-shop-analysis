@@ -164,17 +164,15 @@ def csv_reader_thread(csv_files: List[str], batch_size: int, data_queue: queue.Q
     logging.debug("Hilo lector iniciado")
     
     try:
+        
         for i, csv_file_path in enumerate(csv_files, 1):
             if stop_event.is_set():
                 logging.debug(f"Hilo lector detenido. Archivos procesados: {i-1}/{len(csv_files)}")
                 break
                 
             logging.debug(f"[{i}/{len(csv_files)}] Leyendo: {os.path.basename(csv_file_path)}")
-            try:
-                entity_type = detect_entity_type_from_filename(os.path.basename(csv_file_path))
-            except ValueError:
-                entity_type = None
-            
+            entity_type = detect_entity_type_from_filename(os.path.basename(csv_file_path))
+                   
             batch_count = 0
             for batch in entity_batch_iterator(csv_file_path, batch_size, entity_type):
                 if stop_event.is_set():
@@ -219,11 +217,10 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                     continue
                 elif item[0] == 'batch':
                     _, batch, _ = item
-                    
                     if client.is_shutdown_requested():
                         logging.warning("Cierre solicitado durante envío")
                         break
-                    
+                                        
                     client.send_batch(batch)
                     total_batches_sent += 1
                     total_entities_sent += len(batch)
