@@ -1,15 +1,14 @@
 import logging
+from pathlib import Path
 from common.client import Client
-from common.protocol import entity_batch_iterator, detect_entity_type_from_filename
+from common.protocol import entity_batch_iterator
 import os
-import glob
 import configparser
 import signal
 import sys
 import threading
 import queue
 import time
-from typing import List, Tuple
 
 # Variable global para el cliente (necesario para signal handler)
 global_client = None
@@ -76,119 +75,53 @@ def load_config(config_path="config.ini", data_subfolder=None):
         'log_level': config.get('LOGGING', 'log_level', fallback='INFO'),
     }
 
-def smart_sort_csv_files(csv_files: List[str]) -> List[str]:
-    """
-    Ordena los archivos CSV para optimizar el procesamiento de queries.
-    
-    Orden óptimo basado en dependencias:
-    - Query 1: transactions
-    - Query 2: transaction_items + menu_items
-    - Query 3: transaction_items + stores
-    - Query 4: transactions + users + stores
-    
-    Estrategia: Enviar primero metadata pequeña, luego transactions para que
-    Query 1 y 4 empiecen inmediatamente, finalmente transaction_items.
-    """
-    priority_order = [
-        'menu_items',        # 1. Pequeño, necesario para Q2
-        'stores',            # 2. Pequeño, necesario para Q3 y Q4
-        'users',             # 3. Pequeño, necesario para Q4
-        'transactions',      # 4. Grande, pero Q1 y Q4 NECESITAN empezar YA
-        'transaction_items'  # 5. El más grande, pero Q2 y Q3 ya tienen metadata
-    ]
-    
-    def get_priority(filepath):
-        basename = os.path.basename(filepath).lower()
-        for i, keyword in enumerate(priority_order):
-            if keyword in basename:
-                return i
-        # Si no coincide con ningún patrón conocido, poner al final
-        return 999
-    
-    sorted_files = sorted(csv_files, key=get_priority)
-    
-    return sorted_files
 
-def find_csv_files_in_data_structure(data_path: str) -> List[str]:
-    """
-    Encuentra todos los archivos CSV en la estructura de datos de .data/
-    Busca recursivamente en todas las subcarpetas.
-    """
-    csv_files = []
-    
-    if not os.path.exists(data_path):
-        raise ValueError(f"La ruta de datos {data_path} no existe")
-    
-    if not os.path.isdir(data_path):
-        raise ValueError(f"La ruta {data_path} no es un directorio")
-    
-    # Buscar recursivamente en todas las subcarpetas
-    for root, dirs, files in os.walk(data_path):
-        # Saltar archivos ZIP
-        if any(f.endswith('.zip') for f in files):
-            continue
-            
-        for file in files:
-            if file.endswith('.csv'):
-                csv_files.append(os.path.join(root, file))
-    
-    if not csv_files:
-        raise ValueError(f"No se encontraron archivos CSV en {data_path}")
-    
-    # Ordenar con algoritmo inteligente basado en dependencias de queries
-    return smart_sort_csv_files(csv_files)
-
-def find_csv_files(dataset_path):
-    """
-    Encuentra todos los archivos CSV. Mantiene compatibilidad con versión anterior
-    pero prioriza la estructura de .data/
-    """
-    if os.path.isfile(dataset_path):
-        if dataset_path.endswith('.csv'):
-            return [dataset_path]
-        else:
-            raise ValueError(f"El archivo {dataset_path} no es un archivo CSV")
-    elif os.path.isdir(dataset_path):
-        # Si es la carpeta .data, usar nueva función
-        if dataset_path.endswith('.data') or '.data' in dataset_path:
-            return find_csv_files_in_data_structure(dataset_path)
-        else:
-            csv_files = glob.glob(os.path.join(dataset_path, "*.csv"))
-            if not csv_files:
-                raise ValueError(f"No se encontraron archivos CSV en el directorio {dataset_path}")
-            return smart_sort_csv_files(csv_files)
-    else:
-        raise ValueError(f"La ruta {dataset_path} no existe o no es válida")
-
-def csv_reader_thread(csv_files: List[str], batch_size: int, data_queue: queue.Queue, stop_event: threading.Event):
+def csv_reader_thread(base_path: str, batch_size: int, data_queue: queue.Queue, stop_event: threading.Event):
     logging.debug("Hilo lector iniciado")
-    
+    batch_count = 0
     try:
-        
-        for i, csv_file_path in enumerate(csv_files, 1):
+        base_path = Path(base_path)
+
+        # Mapeo de carpetas a tipos de entidad
+        folder_to_entity = {
+            "menu_items": "menu_items",
+            "stores": "stores",
+            "users": "users",
+            "transactions": "transactions",
+            "transaction_items": "transaction_items",
+        }
+
+        for folder_name, entity_type in folder_to_entity.items():
             if stop_event.is_set():
-                logging.debug(f"Hilo lector detenido. Archivos procesados: {i-1}/{len(csv_files)}")
+                logging.debug(f"Hilo lector detenido.")
                 break
-                
-            logging.debug(f"[{i}/{len(csv_files)}] Leyendo: {os.path.basename(csv_file_path)}")
-            entity_type = detect_entity_type_from_filename(os.path.basename(csv_file_path))
-                   
-            batch_count = 0
-            for batch in entity_batch_iterator(csv_file_path, batch_size, entity_type):
+            
+            folder_path = base_path / folder_name
+            if not folder_path.exists() or not folder_path.is_dir():
+                print(f"Advertencia: No existe la carpeta {folder_path}")
+                continue
+
+            # Iterar todos los CSV dentro de la carpeta
+            for csv_file in folder_path.glob("*.csv"):
                 if stop_event.is_set():
-                    logging.warning(f"Detención solicitada durante lectura de {os.path.basename(csv_file_path)}")
                     break
                 
-                data_queue.put(('batch', batch, csv_file_path))
-                batch_count += 1
+                # Llamamos a entity_batch_iterator para cada CSV
+                logging.debug(f"Leyendo: {csv_file}")
+                for batch in entity_batch_iterator(str(csv_file), batch_size, entity_type):
+                    if stop_event.is_set():
+                        break
+                    
+                    data_queue.put(('batch', batch))
+                    batch_count += 1
+
+                    if batch_count <= 3 or batch_count % 10000 == 0:
+                        logging.debug(f"Batches leídos: {batch_count}, entidades en último: {len(batch)}")
                 
-                if batch_count % 100 == 0:
-                    logging.debug(f"Batches leídos: {batch_count}, entidades en último: {len(batch)}")
-
-            logging.debug(f"Completada lectura: {batch_count} batches")
-
+        
         data_queue.put(('end', None, None))
         logging.debug("Hilo lector terminado")
+        
         
     except Exception as e:
         logging.error(f"Error crítico en hilo lector: {e}", exc_info=True)
@@ -216,7 +149,7 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                     logging.error(f"Error recibido del lector: {item[1]}")
                     continue
                 elif item[0] == 'batch':
-                    _, batch, _ = item
+                    _, batch = item
                     if client.is_shutdown_requested():
                         logging.warning("Cierre solicitado durante envío")
                         break
@@ -225,7 +158,7 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                     total_batches_sent += 1
                     total_entities_sent += len(batch)
                     
-                    if total_batches_sent % 100 == 0:
+                    if total_batches_sent <=  3 or total_batches_sent % 10000 == 0:
                         logging.debug(f"Enviados {total_batches_sent} batches, entidades en último: {len(batch)}")
                     
                     data_queue.task_done()
@@ -239,11 +172,11 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
     except Exception as e:
         logging.error(f"Error crítico en hilo enviador: {e}", exc_info=True)
 
-def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client):
+def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
     """
     Coordina la lectura y envío usando dos threads separados.
     """
-    logging.info(f"Iniciando procesamiento con threading para {len(csv_files)} archivos")
+    logging.info(f"Iniciando procesamiento con threading para archivos")
     
     # Cola para comunicar entre threads
     data_queue = queue.Queue(maxsize=50)  # Limitar tamaño para evitar usar mucha memoria
@@ -252,7 +185,7 @@ def read_and_send_threaded(csv_files: List[str], batch_size: int, client: Client
     # Crear threads
     reader_thread = threading.Thread(
         target=csv_reader_thread, 
-        args=(csv_files, batch_size, data_queue, stop_event),
+        args=(base_path, batch_size, data_queue, stop_event),
         name="CSVReader"
     )
     
@@ -322,12 +255,6 @@ def main():
         
         logging.info(
             f"Configuración cargada: dataset={dataset_path}, servidor={host}:{port}, batch_size={batch_size}")
-
-
-        # Encontrar todos los archivos CSV
-        csv_files = find_csv_files(dataset_path)
-        logging.debug(f"{len(csv_files)} archivos CSV encontrados para procesar")
-
         
         start_time = time.time()
         with Client(host, port) as client:
@@ -335,7 +262,7 @@ def main():
             logging.info(f"Iniciando cliente. Conectado al servidor en {host}:{port}")
             
             # Procesar archivos CSV usando threading
-            read_and_send_threaded(csv_files, batch_size, client)
+            read_and_send_threaded(dataset_path, batch_size, client)
             
             # Opcional: recibir respuesta final del servidor (solo si no hay cierre pendiente)
             if not client.is_shutdown_requested():

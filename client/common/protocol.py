@@ -1,7 +1,5 @@
 import csv
-from typing import List, Union, Optional
 from datetime import datetime, date
-from .entities import Transactions, TransactionItems, Users, Stores, MenuItem
 
 # Constantes para tipos de entidad
 ENTITY_TYPES = {
@@ -60,23 +58,6 @@ USER_INDEX = {
     "birthdate": 2,
     "registered_at": 3,
 }
-
-def detect_entity_type_from_filename(filename: str) -> str:
-    """Detecta el tipo de entidad basado en el nombre del archivo"""
-    filename_lower = filename.lower()
-    if 'transaction_items' in filename_lower:
-        return 'transaction_items'
-    elif 'transactions' in filename_lower:
-        return 'transactions'
-    elif 'users' in filename_lower:
-        return 'users'
-    elif 'stores' in filename_lower:
-        return 'stores'
-    elif 'menu_items' in filename_lower:
-        return 'menu_items'
-    else:
-        raise ValueError(f"No se pudo detectar el tipo de entidad para el archivo: {filename}")
-
 
 def encode_string(s: str) -> bytes:
     """Codifica un string: 4 bytes para tamaño + string en UTF-8"""
