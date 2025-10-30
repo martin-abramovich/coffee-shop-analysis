@@ -161,6 +161,10 @@ def parse_batch(data):
     
     entity_type = ENTITY_TYPES[entity_type_byte]
     
+    if len(data) < offset + 4: 
+        raise ValueError("Datos insuficientes para leer batch id")
+    
+    batch_id, offset = read_uint32(data, offset)
     # Parsear items según el tipo
     items = []
     for i in range(item_count):
@@ -169,7 +173,7 @@ def parse_batch(data):
         item, offset = parse_item(data, offset, entity_type)
         items.append(item)
     
-    return entity_type, items, offset
+    return entity_type, batch_id, items, offset
 
 def parse_item(data, offset, entity_type):
     """Parsea un item individual según su tipo"""
@@ -277,6 +281,22 @@ def flush_message_buffer(session_id, entity_type, message_buffer, thread_mq_map,
         print(f"[GATEWAY] Sesión {session_id}: Error en flush de {entity_type}: {e}")
         # En caso de error, limpiar el buffer de todos modos para evitar acumulación
         message_buffer.clear()
+        
+def send_message(sesion_id, entity_type, msg, thread_mq_map, scalable_exchanges): 
+    if not msg:
+        return
+    
+    try:
+        # Enviar cada mensaje del buffer
+        if entity_type in scalable_exchanges:
+                scalable_exchanges[entity_type].send(msg, is_eos=False)
+        else:
+            target_mq = thread_mq_map.get(entity_type)
+            if target_mq:
+                    target_mq.send(msg)
+        
+    except Exception as e:
+        print(f"[GATEWAY] Sesión {sesion_id}: Error en flush de {entity_type}: {e}")
 
 def check_and_send_eos_on_type_change(session_id, current_type, entity_types_seen, entity_types_eos_sent, 
                                      message_buffers, thread_mq_map, scalable_exchanges):
@@ -444,7 +464,7 @@ def handle_client(conn, addr, mq_map):
     log_with_timestamp(f"[GATEWAY] Sesiones activas: {len(active_sessions)}")
     
     buffer = b""
-    batch_id = 0
+    batch_count = 0
     
     # Control para saber qué tipos de entidad hemos visto y cuáles han terminado
     entity_types_seen = set()
@@ -540,6 +560,7 @@ def handle_client(conn, addr, mq_map):
         while True:
             data = conn.recv(65536)  # Buffer de 64KB (optimización de throughput)
             if not data:
+                print("SALGO POR FALTA De DATA")
                 break
 
             buffer += data
@@ -548,13 +569,13 @@ def handle_client(conn, addr, mq_map):
             while len(buffer) >= 5:  # Mínimo: 4 bytes (cantidad) + 1 byte (tipo)
                 try:
                     # parsear el batch y obtener el offset final real
-                    entity_type, items, end_offset = parse_batch(buffer)
+                    entity_type, batch_id, items, end_offset = parse_batch(buffer)
                     
                     # Remover el batch procesado del buffer exactamente
                     buffer = buffer[end_offset:]
                     
                     # Procesar el batch
-                    batch_id += 1
+                    batch_count += 1
                     session.batch_count += 1
                     processed_items = process_batch_by_type(items, entity_type)
                     
@@ -562,28 +583,30 @@ def handle_client(conn, addr, mq_map):
                     entity_types_seen.add(entity_type)
                     
                     # Detectar cambio de tipo y enviar EOS de tipos anteriores si es necesario
-                    if last_entity_type and last_entity_type != entity_type:
-                        check_and_send_eos_on_type_change(session_id, entity_type, entity_types_seen, 
-                                                         entity_types_eos_sent, message_buffers, 
-                                                         thread_mq_map, scalable_exchanges)
+                    # if last_entity_type and last_entity_type != entity_type:
+                    #     check_and_send_eos_on_type_change(session_id, entity_type, entity_types_seen, 
+                    #                                      entity_types_eos_sent, message_buffers, 
+                    #                                      thread_mq_map, scalable_exchanges)
                     
                     last_entity_type = entity_type
                     
                     if processed_items:
                         session.total_processed += len(processed_items)
                         # Solo imprimir cada 5000 batches para reducir logs
-                        if batch_id % 5000 == 0:
-                            print(f"[GATEWAY] Sesión {session_id}: Procesados {batch_id} batches, total registros: {session.total_processed}")
+                        if batch_count % 10000 == 0:
+                            print(f"[GATEWAY] Sesión {session_id}: Procesados {batch_count} batches, total registros: {session.total_processed}")
 
                         # Serializar mensaje
                         msg = serialize_message(
                             processed_items,
                             stream_id=f"session_{session_id}",
-                            batch_id=f"s{session_id}_b{batch_id:04d}",
+                            batch_id=batch_id,
                             is_batch_end=True,
                             is_eos=False,
                             session_id=session_id
                         )
+                        
+                        #send_message(session_id, entity_type, msg, thread_mq_map, scalable_exchanges)
                         
                         # OPTIMIZACIÓN: Acumular en buffer en lugar de enviar inmediatamente
                         message_buffers[entity_type].append(msg)
@@ -609,25 +632,6 @@ def handle_client(conn, addr, mq_map):
                     print(f"[GATEWAY] Error procesando batch: {e}")
                     buffer = b""
                     break
-
-        # Al final del bucle principal, enviar EOS final para tipos tempranos si no se enviaron
-        early_types = {"users", "menu_items", "stores"}
-        for entity_type in early_types:
-            if (entity_type in entity_types_seen and 
-                entity_type not in entity_types_eos_sent):
-                
-                if message_buffers[entity_type]:
-                    try:
-                        flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
-                                           thread_mq_map, scalable_exchanges)
-                        print(f"[GATEWAY] Sesión {session_id}: Flush final de {entity_type}")
-                    except Exception as e:
-                        print(f"[GATEWAY] Sesión {session_id}: Error en flush final de {entity_type}: {e}")
-                
-                if entity_type in thread_mq_map:
-                    send_eos_to_worker_simple(session_id, entity_type, thread_mq_map, scalable_exchanges)
-                    entity_types_eos_sent.add(entity_type)
-                    print(f"[GATEWAY] Sesión {session_id}: EOS final enviado para {entity_type}")
         
     except Exception as e:
         print(f"[GATEWAY] Sesión {session_id}: Error en conexión con {addr}: {e}")

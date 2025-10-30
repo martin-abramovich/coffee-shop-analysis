@@ -1,7 +1,5 @@
 import socket
 import threading
-from typing import List, Union
-from .entities import Transactions, TransactionItems, Users, Stores, MenuItem
 
 class Client:
     def __init__(self, host: str, port: int):
