@@ -263,7 +263,7 @@ def encode_row(row:dict, entity_type:str):
     else: 
         raise ValueError(f"Tipo de entidad no soportado: {entity_type}")
          
-def entity_batch_iterator(csv_path: str, batch_size: int, entity_type: str, batch_id: int):
+def entity_batch_iterator(csv_path: str, batch_size: int, entity_type: str, batch_id):
     """
     Lee un CSV y genera batches binarios de entidades del tipo especificado.
     batch_size: número máximo de filas por batch
@@ -285,7 +285,7 @@ def entity_batch_iterator(csv_path: str, batch_size: int, entity_type: str, batc
 
                 if count >= batch_size:
                     # header: [4 bytes count][1 byte type][4 bytes id]
-                    header = count.to_bytes(4, 'big') + type_code.to_bytes(1, 'big') + batch_id.to_bytes(4, "big")
+                    header = count.to_bytes(4, 'big') + type_code.to_bytes(1, 'big') + batch_id[0].to_bytes(4, "big")
                     yield bytes(header + batch_data)
                     batch_data.clear()
                     count = 0
@@ -295,10 +295,10 @@ def entity_batch_iterator(csv_path: str, batch_size: int, entity_type: str, batc
                 continue
 
         if count > 0:
-            header = count.to_bytes(4, 'big') + type_code.to_bytes(1, 'big') + batch_id.to_bytes(4, "big")
+            header = count.to_bytes(4, 'big') + type_code.to_bytes(1, 'big') + batch_id[0].to_bytes(4, "big")
             yield bytes(header + batch_data)
 
 def batch_eos(entity_type: str, batch_id: int): 
     type_code = ENTITY_TYPES.get(entity_type)
     
-    return (0).to_bytes(4, 'big') + type_code.to_bytes(1, 'big') + batch_id.to_bytes(4, "big")
+    return (0).to_bytes(4, 'big') + type_code.to_bytes(1, 'big') + batch_id[0].to_bytes(4, "big")

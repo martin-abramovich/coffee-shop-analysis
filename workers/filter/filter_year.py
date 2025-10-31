@@ -1,9 +1,9 @@
+from configparser import Error
 import sys
 import os
 import signal
 import threading
-import time
-from datetime import datetime
+
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -13,71 +13,7 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-NUM_FILTER_HOUR_WORKERS = int(os.environ.get('NUM_FILTER_HOUR_WORKERS', '2'))
-NUM_GROUP_BY_QUERY2_WORKERS = int(os.environ.get('NUM_GROUP_BY_QUERY2_WORKERS', '2'))
-NUM_GROUP_BY_QUERY4_WORKERS = int(os.environ.get('NUM_GROUP_BY_QUERY4_WORKERS', '2'))
-
-# ID del worker (0, 1, 2, ...) - se obtiene del nombre del contenedor o env var
-def get_worker_id():
-    worker_id_env = os.environ.get('WORKER_ID')
-    if worker_id_env is not None:
-        return int(worker_id_env)
-    
-    import socket, re
-    hostname = socket.gethostname()
-    match = re.search(r'[-_](\d+)$', hostname)
-    if match:
-        return int(match.group(1)) - 1
-    return 0
-
-WORKER_ID = get_worker_id()
-
-# Wrapper para round-robin
-class RoundRobinExchange:
-    def __init__(self, exchange, num_workers):
-        self.exchange = exchange
-        self.num_workers = num_workers
-        self.current = 0
-    
-    def send(self, msg):
-        routing_key = f"worker_{self.current}"
-        self.exchange.channel.basic_publish(
-            exchange=self.exchange.exchange_name,
-            routing_key=routing_key,
-            body=msg
-        )
-        self.current = (self.current + 1) % self.num_workers
-    
-    def send_eos(self, msg):
-        # Broadcast EOS a todos
-        self.exchange.channel.basic_publish(
-            exchange=self.exchange.exchange_name,
-            routing_key="eos",
-            body=msg
-        )
-
-# Exchanges de entrada (ahora son exchanges, no queues)
-INPUT_EXCHANGES = {
-    "transactions_raw": [f"worker_{WORKER_ID}", "eos"],  # routing keys: worker específico + eos
-    "transaction_items_raw": [f"worker_{WORKER_ID}", "eos"]
-}
-
-# Exchanges de salida - diferenciamos por destino (scalable = round-robin)
-OUTPUT_EXCHANGES = {
-    "transactions_raw": {
-        "scalable": [
-            ("transactions_year", NUM_FILTER_HOUR_WORKERS),  # Para filter_hour
-            ("transactions_year_query4", NUM_GROUP_BY_QUERY4_WORKERS)  # Para group_by_query4
-        ],
-        "broadcast": []  # Ya no hay broadcast
-    },
-    "transaction_items_raw": {
-        "scalable": [
-            ("transaction_items_year_query2", NUM_GROUP_BY_QUERY2_WORKERS)  # Para group_by_query2
-        ],
-        "broadcast": []  # Ya no hay broadcast
-    }
-}
+WORKER_ID = int(os.environ.get('WORKER_ID'))
 
 def filter_by_year(rows):
     """Mantiene filas con created_at entre 2024 y 2025 (inclusive)."""
@@ -95,149 +31,106 @@ def filter_by_year(rows):
             continue
     return filtered
 
-# Estadísticas globales para logging eficiente
-stats = {"processed": 0, "filtered": 0, "batches": 0}
+
+def on_trans_message(body): 
+    header, rows = deserialize_message(body)
+    
+    filtered = filter_by_year(rows)    
+    
+    out_msg = serialize_message(filtered, header)
+    
+    filter_trans_exchange.send(out_msg)
+
+def on_trans_item_message(body): 
+    header, rows = deserialize_message(body)
+    
+    filtered = filter_by_year(rows)    
+    
+    out_msg = serialize_message(filtered, header)
+    
+    filter_trans_item_queue.send(out_msg)
+
+def filter_transaccion(trans_queue: MessageMiddlewareQueue):
+    try:
+        trans_queue.start_consuming(on_trans_message)
+    except KeyboardInterrupt: 
+        return
+    except Exception as e:
+        print(f"[FilterYear] Error en trans_queue: {e}")
+
+
+def filter_transaccion_item(trans_items_queue: MessageMiddlewareQueue):
+    try:
+        trans_items_queue.start_consuming(on_trans_item_message)
+    except Exception as e:
+        print(f"[FilterYear] Error en trans_items_queue: {e}")
 
 if __name__ == "__main__":
     print(f"[FilterYear] Iniciando worker {WORKER_ID}...")
-    
-    # Control de EOS por sesión - necesitamos recibir EOS de todas las fuentes para cada sesión
-    eos_received = {}  # {session_id: {source: True}}
-    eos_lock = threading.Lock()
+
     shutdown_event = threading.Event()
-    
-    def check_session_eos_received(session_id, source):
-        with eos_lock:
-            if session_id not in eos_received:
-                eos_received[session_id] = set()
-            eos_received[session_id].add(source)
-            
-            # Verificar si esta sesión completó todas las fuentes
-            if len(eos_received[session_id]) == len(INPUT_EXCHANGES):
-                print(f"[FilterYear Worker {WORKER_ID}] EOS recibido de todas las fuentes para sesión {session_id}")
-                return True
-        return False
-    
-    def cleanup_completed_session(session_id):
-        """Limpia los datos de una sesión completada"""
-        with eos_lock:
-            if session_id in eos_received:
-                del eos_received[session_id]
-                print(f"[FilterYear Worker {WORKER_ID}] Sesión {session_id} limpiada")
-    
+
     def signal_handler(signum, frame):
         print(f"[FilterYear Worker {WORKER_ID}] Señal {signum} recibida, cerrando...")
         shutdown_event.set()
-    
+        for mq in [trans_queue, trans_item_queue]:
+            try:
+                mq.stop_consuming()
+            except Exception as e:
+                print(f"Error al parar el consumo: {e}")
+
+    # Registrar señales
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-    
-    # Entrada: múltiples exchanges (transactions y transaction_items)
-    # Cada worker escucha su routing key específica + "eos" para broadcast
-    mq_connections = []
-    for exchange_name, route_keys in INPUT_EXCHANGES.items():
-        mq_in = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
-        mq_connections.append((mq_in, exchange_name))
 
-    # Salida: crear exchanges escalables (round-robin)
-    mq_outputs_scalable = {}
-    
-    for input_exchange, destinations in OUTPUT_EXCHANGES.items():
-        for exchange_name, num_workers in destinations["scalable"]:
-            route_keys = [f"worker_{i}" for i in range(num_workers)] + ["eos"]
-            raw_exchange = MessageMiddlewareExchange(RABBIT_HOST, exchange_name, route_keys)
-            mq_outputs_scalable[exchange_name] = RoundRobinExchange(raw_exchange, num_workers)
+    # Instanciar colas/exchanges
+    trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_raw")
+    trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_items_raw")
 
-    # Modificar on_message para manejar EOS correctamente por sesión
-    def enhanced_on_message(body, source_exchange):
-        header, rows = deserialize_message(body)
-        session_id = header.get("session_id", "unknown")
-        
-        # Verificar si es mensaje de End of Stream
-        if header.get("is_eos") == "true":
-            print(f"[FilterYear Worker {WORKER_ID}] EOS recibido desde {source_exchange} (sesión {session_id})")
-            
-            # Verificar si esta sesión completó todas las fuentes
-            session_complete = check_session_eos_received(session_id, source_exchange)
-            
-            # Reenviar EOS a workers downstream
-            eos_msg = serialize_message([], header)
-            destinations = OUTPUT_EXCHANGES[source_exchange]
-            
-            # EOS a exchanges escalables
-            for exchange_name, _ in destinations["scalable"]:
-                mq_outputs_scalable[exchange_name].send_eos(eos_msg)
-            
-            print(f"[FilterYear Worker {WORKER_ID}] EOS enviado para sesión {session_id}")
-            
-            # Si esta sesión completó todas las fuentes, limpiar después de un delay
-            if session_complete:
-                # Programar limpieza de la sesión después de un delay
-                def delayed_cleanup():
-                    cleanup_completed_session(session_id)
-                
-                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
-                cleanup_thread.start()
-            
-            # El worker continúa esperando más sesiones
-            return
+    filter_trans_exchange = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year")
+    filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year")
 
-        filtered = filter_by_year(rows)
-        if filtered:
-            out_msg = serialize_message(filtered, header)
-            destinations = OUTPUT_EXCHANGES[source_exchange]
-            
-            # Enviar a exchanges escalables
-            for exchange_name, _ in destinations["scalable"]:
-                mq_outputs_scalable[exchange_name].send(out_msg)
+    print(f"[*] FilterWorkerYear {WORKER_ID} conexiones creadas")
 
-    print(f"[*] FilterWorkerYear {WORKER_ID} esperando mensajes de {list(INPUT_EXCHANGES.keys())}...")
-    print(f"[*] Routing keys: worker_{WORKER_ID} + eos")
-
-    try:
-        def consume_exchange(mq_in, exchange_name):
-            try:
-                print(f"[FilterYear Worker {WORKER_ID}] Iniciando consumo de {exchange_name}...")
-                def on_message_wrapper(body):
-                    return enhanced_on_message(body, exchange_name)
-                mq_in.start_consuming(on_message_wrapper)
-            except Exception as e:
-                if not shutdown_event.is_set():
-                    print(f"[FilterYear Worker {WORKER_ID}] Error consumiendo {exchange_name}: {e}")
-        
+    try:    
         threads = []
-        for mq_in, exchange_name in mq_connections:
-            thread = threading.Thread(target=consume_exchange, args=(mq_in, exchange_name))
-            thread.daemon = True
-            thread.start()
-            threads.append(thread)
+        trans_thread  = threading.Thread(target=filter_transaccion, args=(trans_queue,))
+        trans_items_thread = threading.Thread(target=filter_transaccion, args=(trans_item_queue,))
+        
+        trans_thread.start()
+        trans_items_thread.start()
+        
         
         print(f"[FilterYear Worker {WORKER_ID}] Worker iniciado, esperando mensajes de múltiples sesiones...")
         
         while not shutdown_event.is_set():
-            time.sleep(1)
-        
-        print(f"[FilterYear Worker {WORKER_ID}] Terminando por señal externa")
+            trans_thread.join(timeout=1)
+            trans_items_thread.join(timeout=1)
+            if not trans_thread.is_alive() and not trans_items_thread.is_alive():
+                break
             
     except KeyboardInterrupt:
         print(f"\n[FilterYear Worker {WORKER_ID}] Interrupción recibida")
+        shutdown_event.set()
     finally:
         # Detener consumo
-        for mq, _ in mq_connections:
+        for mq in [trans_queue, trans_item_queue]:
             try:
                 mq.stop_consuming()
-            except:
-                pass
-        
+            except Exception as e:
+                print(f"Error al parar el consumo: {e}")
+                
+        for mq in [trans_queue, trans_item_queue, filter_trans_exchange, filter_trans_item_queue]:
+            try:
+                mq.delete()
+            except Exception as e:
+                print(f"Error al eliminar conexión: {e}")
+    
         # Cerrar conexiones
-        try:
-            for mq_in, _ in mq_connections:
-                mq_in.close()
-        except:
-            pass
-        try:
-            for mq_out in mq_outputs_scalable.values():
-                mq_out.close()
-        except:
-            pass
+        for mq in [trans_queue, trans_item_queue, filter_trans_exchange, filter_trans_item_queue]:
+            try:
+                mq.close()
+            except Exception as e:
+                print(f"Error al cerrar conexión: {e}")
+            
         print(f"[x] FilterWorkerYear {WORKER_ID} detenido")

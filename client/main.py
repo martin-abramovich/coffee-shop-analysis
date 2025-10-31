@@ -146,7 +146,7 @@ def csv_reader_thread(base_path: str, batch_size: int, data_queue: queue.Queue, 
                 logging.warning(f"Advertencia: No existe la carpeta {folder_path}")
                 continue
             
-            batch_id = 0 
+            batch_id = [0] 
             
             # Iterar todos los CSV dentro de la carpeta
             for csv_file in folder_path.glob("*.csv"):
@@ -161,8 +161,8 @@ def csv_reader_thread(base_path: str, batch_size: int, data_queue: queue.Queue, 
                     
                     data_queue.put(('batch', batch))
                     batch_count += 1
-                    batch_id += 1
-
+                    batch_id[0] += 1
+                    
                     if batch_count <= 3 or batch_count % 10000 == 0:
                         logging.debug(f"Batches leídos: {batch_count}, entidades en último: {len(batch)}")
             
