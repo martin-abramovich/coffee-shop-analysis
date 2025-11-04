@@ -167,12 +167,8 @@ def on_message(body):
     if rows:
         aggregator.accumulate_transactions(rows, session_id)
     
-    resultado = session_tracker.update(session_id, batch_id, is_eos) 
-    
-    if resultado: 
-        print("El resultado es TRUREEEE")
         
-    if resultado: 
+    if session_tracker.update(session_id, batch_id, is_eos): 
         
         final_results = aggregator.generate_final_results(session_id)
     
@@ -229,7 +225,7 @@ if __name__ == "__main__":
     
     amount_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_amount")
     
-    results_queue = MessageMiddlewareExchange(RABBIT_HOST, 'results_query1', 'query1_results')
+    results_queue = MessageMiddlewareExchange(RABBIT_HOST, 'results_query1', ['query1_results'])
     
     print("[*] AggregatorQuery1 esperando mensajes...")
     print("[*] Query 1: Transacciones 2024-2025, 06:00-23:00, monto >= 75")

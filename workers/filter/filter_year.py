@@ -35,6 +35,9 @@ def filter_by_year(rows):
 def on_trans_message(body): 
     header, rows = deserialize_message(body)
     
+    if (header.get("is_eos") == "true"): 
+        print("SE RECIBIO EOS") 
+    
     filtered = filter_by_year(rows)    
     
     out_msg = serialize_message(filtered, header)
@@ -43,7 +46,7 @@ def on_trans_message(body):
 
 def on_trans_item_message(body): 
     header, rows = deserialize_message(body)
-    
+        
     filtered = filter_by_year(rows)    
     
     out_msg = serialize_message(filtered, header)

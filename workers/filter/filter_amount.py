@@ -67,7 +67,9 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    hour_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_hour")
+    hour_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_hour", ["transactions_hour"])
+    hour_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_hour_q1")
+    hour_trans_queue.bind("transactions_hour", "transactions_hour")
     
     amount_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_amount")
    
@@ -84,14 +86,14 @@ if __name__ == "__main__":
         except Exception as e: 
             print(f"Error al parar el consumo: {e}")
         
-        for mq in [amount_trans_queue, hour_trans_queue]:
+        for mq in [amount_trans_queue, hour_trans_queue, hour_trans_exchange]:
             try:
                 mq.delete()
             except Exception as e:
                 print(f"Error al eliminar conexión: {e}")
     
         # Cerrar conexiones
-        for mq in [amount_trans_queue, hour_trans_queue]:
+        for mq in [amount_trans_queue, hour_trans_queue, hour_trans_exchange]:
             try:
                 mq.close()
             except Exception as e:

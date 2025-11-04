@@ -68,11 +68,14 @@ def filter_by_hour(rows):
 def on_message(body):
     header, rows = deserialize_message(body)
     
+    if (header.get("is_eos") == "true"):
+        print("SE RECIBIO EOS")
+        
     filtered = filter_by_hour(rows)
     
     out_msg = serialize_message(filtered, header)
 
-    hour_trans_queue.send(out_msg)
+    hour_trans_exchange.send(out_msg)
 
 if __name__ == "__main__":
     print(f"[FilterHour] Iniciando worker {WORKER_ID}...")
@@ -89,11 +92,15 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Entrada: múltiples exchanges con routing keys específicas
+    # Entrada
     year_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year")
     
-    hour_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_hour")
-    
+    # Saida
+    hour_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_hour", ["transactions_hour"])
+    hour_trans_queue_q1 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_hour_q1")
+    hour_trans_queue_q1.bind("transactions_hour", "transactions_hour")
+    hour_trans_queue_q3 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_hour_q3")
+    hour_trans_queue_q3.bind("transactions_hour", "transactions_hour")
 
     print(f"[*] FilterWorkerHour conexiones creadas ...")
     try:
@@ -103,20 +110,15 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n[FilterHour] Interrupción recibida")
         shutdown_event.set()
-    finally:
-        try:
-            year_trans_queue.stop_consuming()
-        except Exception as e: 
-            print(f"Error al parar el consumo: {e}")
-            
-        for mq in [year_trans_queue, hour_trans_queue]:
+    finally:    
+        for mq in [year_trans_queue, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
             try:
                 mq.delete()
             except Exception as e:
                 print(f"Error al eliminar conexión: {e}")
     
         # Cerrar conexiones
-        for mq in [year_trans_queue, hour_trans_queue]:
+        for mq in [year_trans_queue, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
             try:
                 mq.close()
             except Exception as e:

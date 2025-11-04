@@ -441,10 +441,11 @@ def handle_client(conn, addr, mq_map):
                     
                     
                     session.total_processed += len(processed_items)
-                    # Solo imprimir cada 5000 batches para reducir logs
+                    
                     if batch_count < 3 or batch_count % 10000 == 0:
                         print(f"[GATEWAY] Sesión {session_id}: Procesados {batch_count} batches, total registros: {session.total_processed}")
                         print(f"Batch id: {batch_id}")
+                        
                     # Serializar mensaje
                     msg = serialize_message(
                         processed_items,
