@@ -93,7 +93,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada
-    year_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year")
+    year_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_year", ["transactions_year"])
+    year_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q1")
     
     # Saida
     hour_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_hour", ["transactions_hour"])
@@ -111,14 +112,14 @@ if __name__ == "__main__":
         print("\n[FilterHour] Interrupción recibida")
         shutdown_event.set()
     finally:    
-        for mq in [year_trans_queue, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
+        for mq in [year_trans_queue, year_trans_exchange, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
             try:
                 mq.delete()
             except Exception as e:
                 print(f"Error al eliminar conexión: {e}")
     
         # Cerrar conexiones
-        for mq in [year_trans_queue, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
+        for mq in [year_trans_queue, year_trans_exchange, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
             try:
                 mq.close()
             except Exception as e:

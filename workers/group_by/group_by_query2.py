@@ -14,22 +14,7 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
-
-# ID del worker (auto-detectado del hostname o env var)
-def get_worker_id():
-    worker_id_env = os.environ.get('WORKER_ID')
-    if worker_id_env is not None:
-        return int(worker_id_env)
-    
-    import socket, re
-    hostname = socket.gethostname()
-    match = re.search(r'[-_](\d+)$', hostname)
-    if match:
-        return int(match.group(1)) - 1
-    return 0
-
-WORKER_ID = get_worker_id()
+WORKER_ID = os.environ.get('WORKER_ID')
 
 INPUT_EXCHANGE = "transaction_items_year_query2"  # exchange dedicado para query2
 INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
@@ -95,46 +80,13 @@ def group_by_month_and_item(rows):
     
     return metrics
 
-# Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
-eos_count = {}  # {session_id: count}
-eos_lock = threading.Lock()
-batches_sent = 0 
 
+batches_sent = 0
+ 
 def on_message(body):
-    global eos_count
     global batches_sent
     header, rows = deserialize_message(body)
-    session_id = header.get("session_id", "unknown")
-    
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        with eos_lock:
-            # Inicializar contador para esta sesión si no existe
-            if session_id not in eos_count:
-                eos_count[session_id] = 0
-            eos_count[session_id] += 1
-            print(f"[GroupByQuery2] EOS recibido para sesión {session_id} ({eos_count[session_id]}/{NUM_FILTER_YEAR_WORKERS})")
-            
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year para esta sesión
-            if eos_count[session_id] >= NUM_FILTER_YEAR_WORKERS:
-                print(f"[GroupByQuery2] EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
-                eos_msg = serialize_message([], header)  # Mantiene session_id en header
-                mq_out.send(eos_msg)
-                print(f"[GroupByQuery2] EOS reenviado para sesión {session_id}")
-                
-                # Limpiar contador EOS para esta sesión después de un delay
-                def delayed_cleanup():
-                    time.sleep(30)  # Esperar 30 segundos antes de limpiar
-                    with eos_lock:
-                        if session_id in eos_count:
-                            del eos_count[session_id]
-                            print(f"[GroupByQuery2] Sesión {session_id} limpiada de contadores EOS")
-                
-                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
-                cleanup_thread.start()
-        return
-    
-    total_in = len(rows)
+        
      
     # Agrupar por (mes, item_id) y calcular métricas
     month_item_metrics = group_by_month_and_item(rows)
@@ -162,6 +114,7 @@ def on_message(body):
     
     # Log compacto solo si hay datos significativos
     if batches_sent <= 3 or batches_sent % 10000 == 0:
+        total_in = len(rows)
         unique_months = len(set(month for month, _ in month_item_metrics.keys()))
         unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
         

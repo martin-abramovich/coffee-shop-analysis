@@ -7,6 +7,8 @@ import re
 from collections import defaultdict
 from datetime import datetime
 
+from workers.session_tracker import SessionTracker
+
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
@@ -20,16 +22,12 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-NUM_GROUP_BY_QUERY4_WORKERS = int(os.environ.get('NUM_GROUP_BY_QUERY4_WORKERS', '2'))
 
 INPUT_EXCHANGE = "transactions_query4"    # exchange del group_by query 4
 INPUT_ROUTING_KEY = "query4"              # routing key del group_by
 OUTPUT_EXCHANGE = "results_query4"        # exchange de salida para resultados finales
 ROUTING_KEY = "query4_results"            # routing para resultados
 
-# Control de EOS
-eos_count = {}  # {session_id: count}
-eos_lock = threading.Lock()
 
 # Exchanges adicionales para JOIN
 STORES_EXCHANGE = "stores_raw"
@@ -53,7 +51,6 @@ class AggregatorQuery4:
     def __init__(self):
         # Datos por sesión: {session_id: session_data}
         self.session_data = {}
-        self.max_combinations_per_session = 200000  # Límite de seguridad
     
     def initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
@@ -61,17 +58,9 @@ class AggregatorQuery4:
             self.session_data[session_id] = {
                 'store_user_transactions': defaultdict(int),
                 'batches_received': 0,
-                'eos_received': False,
-                'results_sent': False,
-                'eos_transactions_done': False,
                 # Diccionarios de JOIN específicos de esta sesión
                 'store_id_to_name': {},  # store_id -> store_name
                 'user_id_to_birthdate': {},  # user_id -> birthdate
-                # Control de flujo específico de esta sesión
-                'stores_loaded': False,
-                'users_loaded': False,
-                'eos_stores_done': False,
-                'eos_users_done': False
             }
     
     def get_session_data(self, session_id):
@@ -156,7 +145,7 @@ class AggregatorQuery4:
         
         session_data['batches_received'] += 1
         
-        # OPTIMIZACIÓN: Logs menos frecuentes para mejor performance
+        
         if session_data['batches_received'] % 10000 == 0 or session_data['batches_received'] <= 5:
             print(f"[AggregatorQuery4] Sesión {session_id}: Batch {session_data['batches_received']}: {processed_count}/{len(rows)} procesados; total combinaciones={len(session_data['store_user_transactions'])}")
         
@@ -245,6 +234,7 @@ class AggregatorQuery4:
 
 # Instancia global del agregador
 aggregator = AggregatorQuery4()
+session_tracker = SessionTracker(["transactions", "stores", "users"])
 
 # Variable global para control de shutdown
 shutdown_event = None
@@ -258,39 +248,17 @@ def on_transactions_message(body):
         return
     
     session_id = header.get("session_id", "unknown")
+    batch_id = int(header.get("batch_id"))
+    is_eos = header.get("is_eos") == "true"
     
-    # Inicializar contadores por sesión si no existen
-    if session_id not in eos_count:
-        eos_count[session_id] = 0
+    if is_eos:
+        print(f"Se recibió EOS en transactions para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
     
-    # Si ya enviamos resultados para esta sesión, ignorar mensajes adicionales
-    session_data = aggregator.get_session_data(session_id)
-    if session_data['results_sent']:
-        return
-    
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        with eos_lock:
-            eos_count[session_id] += 1
-            log_with_timestamp(f"[AggregatorQuery4] EOS recibido en transacciones para sesión {session_id} ({eos_count[session_id]}/{NUM_GROUP_BY_QUERY4_WORKERS})")
-            
-            # Solo procesar cuando recibimos de TODOS los workers para esta sesión
-            if eos_count[session_id] < NUM_GROUP_BY_QUERY4_WORKERS:
-                print(f"[AggregatorQuery4] Esperando más EOS para sesión {session_id}...")
-                return
-            
-            log_with_timestamp(f"[AggregatorQuery4] EOS recibido de TODOS los workers para sesión {session_id}. Marcando como listo...")
-            session_data['eos_received'] = True
-            session_data['eos_transactions_done'] = True
-            
-            # Si ya tenemos stores y users cargados para esta sesión, generar resultados
-            if session_data['stores_loaded'] and session_data['users_loaded'] and not session_data['results_sent']:
-                generate_and_send_results(session_id)
-        return
-    
-    # Procesamiento normal: acumular conteos de transacciones para esta sesión
     if rows:
         aggregator.accumulate_transactions(rows, session_id)
+    
+    if session_tracker.update(session_id, "transactions", batch_id, is_eos):
+        generate_and_send_results(session_id)
 
 def on_stores_message(body):
     """Maneja mensajes de stores para el JOIN."""
@@ -301,24 +269,17 @@ def on_stores_message(body):
         return
     
     session_id = header.get("session_id", "unknown")
-    session_data = aggregator.get_session_data(session_id)
+    batch_id = int(header.get("batch_id"))
+    is_eos = header.get("is_eos") == "true"
     
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        print(f"[AggregatorQuery4] EOS recibido en stores para sesión {session_id}. Marcando como listo...")
-        session_data['stores_loaded'] = True
-        session_data['eos_stores_done'] = True
+    if is_eos:
+        print(f"Se recibió EOS en stores para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
         
-        # Generar resultados para esta sesión si ya tiene todo listo
-        if session_data['eos_received'] and session_data['users_loaded'] and not session_data['results_sent']:
-            print(f"[AggregatorQuery4] Generando resultados para sesión {session_id}...")
-            generate_and_send_results(session_id)
-        return
-    
-    # Cargar stores para JOIN en esta sesión
     if rows:
-        # OPTIMIZACIÓN: Eliminar logs de debug excesivos
         aggregator.load_stores(rows, session_id)
+    
+    if session_tracker.update(session_id, "stores", batch_id, is_eos):
+        generate_and_send_results(session_id)
 
 def on_users_message(body):
     """Maneja mensajes de users para el JOIN."""
@@ -329,40 +290,23 @@ def on_users_message(body):
         return
     
     session_id = header.get("session_id", "unknown")
-    session_data = aggregator.get_session_data(session_id)
+    batch_id = int(header.get("batch_id"))
+    is_eos = header.get("is_eos") == "true"
     
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        print(f"[AggregatorQuery4] EOS recibido en users para sesión {session_id}. Marcando como listo...")
-        session_data['users_loaded'] = True
-        session_data['eos_users_done'] = True
-        
-        # Generar resultados para esta sesión si ya tiene todo listo
-        if session_data['eos_received'] and session_data['stores_loaded'] and not session_data['results_sent']:
-            print(f"[AggregatorQuery4] Generando resultados para sesión {session_id}...")
-            generate_and_send_results(session_id)
-        return
-    
-    # Cargar users para JOIN en esta sesión
+    if is_eos:
+        print(f"Se recibió EOS en users para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
+     
     if rows:
-        # OPTIMIZACIÓN: Eliminar logs de debug excesivos
         aggregator.load_users(rows, session_id)
+    
+    if session_tracker.update(session_id, "users", batch_id, is_eos):
+        generate_and_send_results(session_id)
 
 def generate_and_send_results(session_id):
     """Genera y envía los resultados finales cuando todos los flujos terminaron para una sesión específica."""
-    global shutdown_event, mq_out
-    
-    session_data = aggregator.get_session_data(session_id)
-    
-    # Evitar procesamiento duplicado para esta sesión
-    if session_data['results_sent']:
-        print(f"[AggregatorQuery4] Resultados ya enviados para sesión {session_id}, ignorando llamada duplicada")
-        return
-    
+    global shutdown_event, results_exchange
+        
     print(f"[AggregatorQuery4] Todos los flujos completados para sesión {session_id}. Generando resultados finales...")
-    
-    # Marcar como enviado ANTES de generar para evitar race conditions
-    session_data['results_sent'] = True
     
     # Generar resultados finales para esta sesión
     final_results = aggregator.generate_final_results(session_id)
@@ -383,7 +327,7 @@ def generate_and_send_results(session_id):
         }
         
         # Enviar en batches si hay muchos resultados
-        batch_size = 30  # Batches más pequeños para TOP 3
+        batch_size = 100  # Batches más pequeños para TOP 3
         total_batches = (len(final_results) + batch_size - 1) // batch_size
         
         for i in range(0, len(final_results), batch_size):
@@ -393,57 +337,40 @@ def generate_and_send_results(session_id):
             batch_header["total_batches"] = str(total_batches)
             
             result_msg = serialize_message(batch, batch_header)
+            results_exchange.send(result_msg)
             
-            # Intentar enviar con reconexión automática si falla
-            max_retries = 3
-            sent = False
-            for retry in range(max_retries):
-                try:
-                    mq_out.send(result_msg)
-                    sent = True
-                    break
-                except Exception as e:
-                    print(f"[AggregatorQuery4] Error enviando batch {batch_header['batch_number']} (intento {retry+1}/{max_retries}): {e}")
-                    if retry < max_retries - 1:
-                        # Crear conexión temporal para esta sesión
-                        try:
-                            from middleware.middleware import MessageMiddlewareExchange
-                            temp_mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
-                            temp_mq_out.send(result_msg)
-                            sent = True
-                            print(f"[AggregatorQuery4] Reconexión exitosa para sesión {session_id}")
-                            break
-                        except Exception as e2:
-                            print(f"[AggregatorQuery4] Error en reconexión para sesión {session_id}: {e2}")
-                            pass  # Continuar con el siguiente intento
-            
-            if not sent:
-                print(f"[AggregatorQuery4] CRÍTICO: No se pudo enviar batch {batch_header['batch_number']} para sesión {session_id}")
-                # No hacer return, continuar con el siguiente batch
             
             # Log solo si hay pocos batches o cada 10
             if total_batches <= 5 or (i // batch_size + 1) % 10 == 0:
                 print(f"[AggregatorQuery4] Enviado batch {batch_header['batch_number']}/{batch_header['total_batches']}")
     
     print(f"[AggregatorQuery4] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
-    
-    # Programar limpieza de la sesión después de un delay
-    def delayed_cleanup():
-        if session_id in aggregator.session_data:
-            del aggregator.session_data[session_id]
-            print(f"[AggregatorQuery4] Sesión {session_id} limpiada después de 120s")
-        # Limpiar también el contador EOS
-        with eos_lock:
-            if session_id in eos_count:
-                del eos_count[session_id]
-    
-    cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
-    cleanup_thread.start()
+    if session_id in aggregator.session_data:
+        del aggregator.session_data[session_id]
 
-if __name__ == "__main__":
-    import threading
+def consume_transactions():
+    try:
+        transactions_queue.start_consuming(on_transactions_message)
+    except Exception as e:
+        if not shutdown_event.is_set():
+            print(f"[AggregatorQuery4] Error en consumo de transacciones: {e}")
+
+def consume_stores():
+    try:
+        stores_exchange.start_consuming(on_stores_message)
+    except Exception as e:
+        if not shutdown_event.is_set():
+            print(f"[AggregatorQuery4] Error en consumo de stores: {e}")
+        
+def consume_users():
+    try:
+        users_queue.start_consuming(on_users_message)
+    except Exception as e:
+        if not shutdown_event.is_set():
+            print(f"[AggregatorQuery4] Error en consumo de users: {e}")
     
-    # Control de EOS - esperamos EOS de las 3 fuentes
+
+if __name__ == "__main__":    
     shutdown_event = threading.Event()
     
     def signal_handler(signum, frame):
@@ -454,41 +381,21 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada 1: conteos de transacciones del group_by_query4
-    mq_transactions = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, [INPUT_ROUTING_KEY])
+    transactions_queue = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q4")
     
     # Entrada 2: stores para JOIN
-    mq_stores = MessageMiddlewareExchange(RABBIT_HOST, STORES_EXCHANGE, [STORES_ROUTING_KEY])
+    stores_exchange = MessageMiddlewareExchange(RABBIT_HOST, STORES_EXCHANGE, [STORES_ROUTING_KEY])
     
     # Entrada 3: users para JOIN
-    mq_users = MessageMiddlewareQueue(RABBIT_HOST, USERS_QUEUE)
+    users_queue = MessageMiddlewareQueue(RABBIT_HOST, USERS_QUEUE)
     
     # Salida: exchange para resultados finales
-    mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+    results_exchange = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
     
     print("[*] AggregatorQuery4 esperando mensajes...")
     print("[*] Query 4: TOP 3 clientes por sucursal (más compras 2024-2025)")
     print("[*] Consumiendo de 3 fuentes: transacciones + stores + users para doble JOIN")
     
-    def consume_transactions():
-        try:
-            mq_transactions.start_consuming(on_transactions_message)
-        except Exception as e:
-            if not shutdown_event.is_set():
-                print(f"[AggregatorQuery4] Error en consumo de transacciones: {e}")
-    
-    def consume_stores():
-        try:
-            mq_stores.start_consuming(on_stores_message)
-        except Exception as e:
-            if not shutdown_event.is_set():
-                print(f"[AggregatorQuery4] Error en consumo de stores: {e}")
-            
-    def consume_users():
-        try:
-            mq_users.start_consuming(on_users_message)
-        except Exception as e:
-            if not shutdown_event.is_set():
-                print(f"[AggregatorQuery4] Error en consumo de users: {e}")
     
     try:
         # Ejecutar los 3 consumidores en paralelo como daemon threads
@@ -507,42 +414,35 @@ if __name__ == "__main__":
         
         # Loop principal - solo termina por señal
         while not shutdown_event.is_set():
-            time.sleep(1)
+            transactions_thread.join(timeout=1)
+            stores_thread.join(timeout=1)
+            users_thread.join(timeout=1)
+            if not transactions_thread.is_alive() and not stores_thread.is_alive() and not users_thread.is_alive():
+                break
         
         print("[AggregatorQuery4] Terminando por señal externa")
         
     except KeyboardInterrupt:
-        print("\n[AggregatorQuery4] Interrupción recibida")
+        shutdown_event.set()
     finally:
-        # Detener consumo
-        try:
-            mq_transactions.stop_consuming()
-        except:
-            pass
-        try:
-            mq_stores.stop_consuming()
-        except:
-            pass
-        try:
-            mq_users.stop_consuming()
-        except:
-            pass
+        for mq in [transactions_queue, stores_exchange, users_queue]:
+            try:
+                mq.stop_consuming()
+            except Exception as e:
+                print(f"Error al parar el consumo: {e}")
         
+        
+        for mq in [transactions_queue, stores_exchange, users_queue, results_exchange]:
+            try:
+                mq.delete()
+            except Exception as e:
+                print(f"Error al eliminar conexión: {e}")
+    
         # Cerrar conexiones
-        try:
-            mq_transactions.close()
-        except:
-            pass
-        try:
-            mq_stores.close()
-        except:
-            pass
-        try:
-            mq_users.close()
-        except:
-            pass
-        try:
-            mq_out.close()
-        except:
-            pass
+        for mq in [transactions_queue, stores_exchange, users_queue, results_exchange]:
+            try:
+                mq.close()
+            except Exception as e:
+                print(f"Error al cerrar conexión: {e}")
+      
         print("[x] AggregatorQuery4 detenido")

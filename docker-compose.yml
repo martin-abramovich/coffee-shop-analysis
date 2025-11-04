@@ -33,7 +33,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -54,7 +53,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -112,7 +110,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -147,7 +144,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -243,22 +239,21 @@ services:
   #     - coffee-network
 
   # # Group By Query4 Workers
-  # group_by_query4_0:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.worker
-  #   container_name: coffee-group-by-query4-0
-  #   command: ["python", "-m", "workers.group_by.group_by_query4"]
-  #   environment:
-  #     RABBITMQ_HOST: ${RABBITMQ_HOST}
-  #     PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-  #     NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
-  #     WORKER_ID: 0
-  #   depends_on:
-  #     rabbitmq:
-  #       condition: service_healthy
-  #   networks:
-  #     - coffee-network
+  group_by_query4_0:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: coffee-group-by-query4-0
+    command: ["python", "-m", "workers.group_by.group_by_query4"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      WORKER_ID: 0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
 
   # group_by_query4_1:
   #   build:
@@ -286,7 +281,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_AMOUNT_WORKERS: ${NUM_FILTER_AMOUNT_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -322,20 +316,19 @@ services:
     networks:
       - coffee-network
 
-  # aggregator_query4:
-  #   build:
-  #    context: .
-  #    dockerfile: Dockerfile.worker
-  #   command: ["python", "-m", "workers.aggregator.aggregator_query4"]
-  #   environment:
-  #     RABBITMQ_HOST: ${RABBITMQ_HOST}
-  #     PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-  #     NUM_GROUP_BY_QUERY4_WORKERS: ${NUM_GROUP_BY_QUERY4_WORKERS}
-  #   depends_on:
-  #     rabbitmq:
-  #       condition: service_healthy
-  #   networks:
-  #     - coffee-network
+  aggregator_query4:
+    build:
+     context: .
+     dockerfile: Dockerfile.worker
+    command: ["python", "-m", "workers.aggregator.aggregator_query4"]
+    environment:
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - coffee-network
 
   # ==================== CLIENT ====================
   # El cliente se ejecuta manualmente cuando sea necesario

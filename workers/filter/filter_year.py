@@ -15,6 +15,26 @@ from workers.utils import deserialize_message, serialize_message
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 WORKER_ID = int(os.environ.get('WORKER_ID'))
 
+
+# INPUT_EXCHANGES = {
+#     "transactions_raw": [f"worker_{WORKER_ID}", "eos"],  # routing keys: worker específico + eos
+#     "transaction_items_raw": [f"worker_{WORKER_ID}", "eos"]
+# }
+
+# OUTPUT_EXCHANGES = {
+#     "transactions_raw": {
+#         "scalable": [
+#             ("transactions_year", NUM_FILTER_HOUR_WORKERS),  # Para filter_hour
+#             ("transactions_year_query4", NUM_GROUP_BY_QUERY4_WORKERS)  # Para group_by_query4
+#         ],
+#     },
+#     "transaction_items_raw": {
+#         "scalable": [
+#             ("transaction_items_year_query2", NUM_GROUP_BY_QUERY2_WORKERS)  # Para group_by_query2
+#         ],
+#     }
+# }
+
 def filter_by_year(rows):
     """Mantiene filas con created_at entre 2024 y 2025 (inclusive)."""
     filtered = []
@@ -82,15 +102,19 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Error al parar el consumo: {e}")
 
-    # Registrar señales
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Instanciar colas/exchanges
+    
     trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_raw")
     trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_items_raw")
 
-    filter_trans_exchange = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year")
+    filter_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_year", ["transactions_year"])
+    filter_trans_queue_q1 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q1")
+    filter_trans_queue_q1.bind("transactions_year", "transactions_year")
+    filter_trans_queue_q4 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q4")
+    filter_trans_queue_q4.bind("transactions_year", "transactions_year")
+    
     filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year")
 
     print(f"[*] FilterWorkerYear {WORKER_ID} conexiones creadas")
@@ -123,7 +147,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Error al parar el consumo: {e}")
                 
-        for mq in [trans_queue, trans_item_queue, filter_trans_exchange, filter_trans_item_queue]:
+        for mq in [trans_queue, trans_item_queue, filter_trans_exchange, filter_trans_item_queue, filter_trans_queue_q1, filter_trans_queue_q4]:
             try:
                 mq.delete()
             except Exception as e:
