@@ -111,7 +111,6 @@ def on_message(body):
     mq_out.send(out_msg)
     batches_sent += 1
    
-    
     # Log compacto solo si hay datos significativos
     if batches_sent <= 3 or batches_sent % 10000 == 0:
         total_in = len(rows)
@@ -122,33 +121,34 @@ def on_message(body):
 
 if __name__ == "__main__":
     print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")
-    shutdown_requested = False
+    shutdown_event = threading.Event()
     
     def signal_handler(signum, frame):
-        global shutdown_requested
         print(f"[GroupByQuery2] Señal {signum} recibida, cerrando...")
-        shutdown_requested = True
-        mq_in.stop_consuming()
+        shutdown_event.set()
+        try:
+            filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year").stop_consuming()
+        except Exception as e: 
+            print(f"Error al parar el consumo: {e}")
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada: suscripción al exchange del filtro por año con routing keys específicas
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
+    year_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transaction_items_year")
     
     # Salida: exchange para datos agregados de query 2
-    mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+    mq_out = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q2")
     
     print("[*] GroupByQuery2 worker esperando mensajes...")
     print(f"[*] Consumiendo de: {INPUT_EXCHANGE} (transaction_items filtrados por año)")
-    print(f"[*] Esperando EOS de {NUM_FILTER_YEAR_WORKERS} workers de filter_year")
     try:
-        mq_in.start_consuming(on_message)
+        year_trans_item_queue.start_consuming(on_message)
     except KeyboardInterrupt:
         print("\n[GroupByQuery2] Interrupción recibida")
     finally:
         try:
-            mq_in.close()
+            filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year").close()
         except:
             pass
         try:

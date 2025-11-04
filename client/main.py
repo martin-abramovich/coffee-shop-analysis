@@ -108,7 +108,7 @@ def csv_reader_transacctions_thread(base_path: str, batch_size: int, data_queue:
                     if batch_count <= 3 or batch_count % 10000 == 0:
                         logging.debug(f"Batches leídos: {batch_count}, entidades en último: {len(batch)}")
                         
-            batch = batch_eos(entity_type, batch_id[0])
+            batch = batch_eos(entity_type, batch_id)
             data_queue.put(('batch', batch))
             logging.debug(f"Batch EOS para {entity_type}")
             

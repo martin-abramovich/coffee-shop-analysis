@@ -53,26 +53,34 @@ def filter_by_year(rows):
 
 
 def on_trans_message(body): 
-    header, rows = deserialize_message(body)
-    
-    if (header.get("is_eos") == "true"): 
-        print("SE RECIBIO EOS") 
-    
-    filtered = filter_by_year(rows)    
-    
-    out_msg = serialize_message(filtered, header)
-    
-    filter_trans_exchange.send(out_msg)
+    try:
+        header, rows = deserialize_message(body)
 
-def on_trans_item_message(body): 
-    header, rows = deserialize_message(body)
+        if (header.get("is_eos") == "true"): 
+            print("SE RECIBIO EOS") 
+
+        filtered = filter_by_year(rows)    
+
+        out_msg = serialize_message(filtered, header)
+
+        filter_trans_exchange.send(out_msg)
+    except Exception as e:
+        print(f"[FilterYear] Error al procesar mensaje: {e}")
         
-    filtered = filter_by_year(rows)    
-    
-    out_msg = serialize_message(filtered, header)
-    
-    filter_trans_item_queue.send(out_msg)
+def on_trans_item_message(body): 
+    try: 
+        header, rows = deserialize_message(body)
 
+        if (header.get("is_eos") == "true"): 
+            print("SE RECIBIO EOS") 
+
+        filtered = filter_by_year(rows)    
+        
+        out_msg = serialize_message(filtered, header)
+        filter_trans_item_queue.send(out_msg)
+    except Exception as e:
+        print(f"[FilterYear] Error al procesar mensaje de transaction_items: {e}")
+        
 def filter_transaccion(trans_queue: MessageMiddlewareQueue):
     try:
         trans_queue.start_consuming(on_trans_message)
@@ -105,24 +113,27 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    
-    trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_raw")
-    trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_items_raw")
+    try: 
+        trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_raw")
+        trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transaction_items_raw")
 
-    filter_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_year", ["transactions_year"])
-    filter_trans_queue_q1 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q1")
-    filter_trans_queue_q1.bind("transactions_year", "transactions_year")
-    filter_trans_queue_q4 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q4")
-    filter_trans_queue_q4.bind("transactions_year", "transactions_year")
-    
-    filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year")
+        filter_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_year", ["transactions_year"])
+        filter_trans_queue_q1 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q1")
+        filter_trans_queue_q1.bind("transactions_year", "transactions_year")
+        filter_trans_queue_q4 = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q4")
+        filter_trans_queue_q4.bind("transactions_year", "transactions_year")
 
+        filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transaction_items_year")
+    except Exception as e:
+        print(f"[FilterYear Worker {WORKER_ID}] Error al crear conexiones: {e}")
+        sys.exit(1)
+        
     print(f"[*] FilterWorkerYear {WORKER_ID} conexiones creadas")
 
     try:    
         threads = []
         trans_thread  = threading.Thread(target=filter_transaccion, args=(trans_queue,))
-        trans_items_thread = threading.Thread(target=filter_transaccion, args=(trans_item_queue,))
+        trans_items_thread = threading.Thread(target=filter_transaccion_item, args=(trans_item_queue,))
         
         trans_thread.start()
         trans_items_thread.start()

@@ -119,7 +119,6 @@ def on_message(body):
         print(f"[GroupByQuery3] batches_sent={batches_sent} in={total_in} created={len(semester_store_metrics)} semesters={unique_semesters} stores={unique_stores}")
 
 if __name__ == "__main__":
-    import threading
     print(f"[GroupByQuery3] Iniciando worker {WORKER_ID}...")
     shutdown_event = threading.Event()
     
