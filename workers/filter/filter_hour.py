@@ -69,7 +69,7 @@ def on_message(body):
     header, rows = deserialize_message(body)
     
     if (header.get("is_eos") == "true"):
-        print("SE RECIBIO EOS")
+        print("SE RECIBIO EOS con batch_id:", header.get("batch_id"))
         
     filtered = filter_by_hour(rows)
     

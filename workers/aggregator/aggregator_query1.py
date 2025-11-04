@@ -4,6 +4,8 @@ import signal
 import threading
 from datetime import datetime
 
+from workers.session_tracker import SessionTracker
+
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
@@ -23,54 +25,6 @@ INPUT_ROUTING_KEY = "amount"              # routing key del filtro por amount
 OUTPUT_EXCHANGE = "results_query1"        # exchange de salida para resultados finales
 ROUTING_KEY = "query1_results"            # routing para resultados
 
-
-class SessionTrackerRanges:
-    """Versión optimizada: usa rangos de batch_ids recibidos para detectar completitud."""
-    def __init__(self):
-        # {session_id: {"ranges": [(start, end), ...], "expected": None}}
-        self.sessions = {}
-
-    def _merge_ranges(self, ranges, new_start, new_end):
-        """Inserta un nuevo rango y fusiona si se solapan o son contiguos."""
-        merged = []
-        placed = False
-        for start, end in ranges:
-            if end + 1 < new_start:
-                merged.append((start, end))
-            elif new_end + 1 < start:
-                if not placed:
-                    merged.append((new_start, new_end))
-                    placed = True
-                merged.append((start, end))
-            else:
-                # Solapados o contiguos → fusionar
-                new_start = min(new_start, start)
-                new_end = max(new_end, end)
-        if not placed:
-            merged.append((new_start, new_end))
-        return merged
-
-    def update(self, session_id: str, batch_id: int, is_eos: bool) -> bool:
-        """Actualiza la sesión y devuelve True si ya recibió todos los paquetes."""
-        info = self.sessions.get(session_id)
-        if info is None:
-            info = {"ranges": [], "expected": None}
-            self.sessions[session_id] = info
-
-        info["ranges"] = self._merge_ranges(info["ranges"], batch_id, batch_id)
-
-        if is_eos:
-            info["expected"] = batch_id
-            print(info["ranges"])
-
-        if info["expected"] is not None:
-            # Si el primer rango comienza en 1 y termina en expected, está completa
-            if len(info["ranges"]) == 1:
-                start, end = info["ranges"][0]
-                if start == 0 and end >= info["expected"]:
-                    del self.sessions[session_id]
-                    return True
-        return False
 
 class AggregatorQuery1:
     def __init__(self):
@@ -145,8 +99,9 @@ class AggregatorQuery1:
         return results
 
 aggregator = AggregatorQuery1()
-session_tracker = SessionTrackerRanges()
+session_tracker = SessionTracker(["transactions"])
 count = 0
+
 def on_message(body):
     global aggregator
     global session_tracker
@@ -168,7 +123,7 @@ def on_message(body):
         aggregator.accumulate_transactions(rows, session_id)
     
         
-    if session_tracker.update(session_id, batch_id, is_eos): 
+    if session_tracker.update(session_id, "transactions",batch_id, is_eos): 
         
         final_results = aggregator.generate_final_results(session_id)
     
