@@ -7,51 +7,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from middleware.middleware import MessageMiddlewareExchange, MessageMiddlewareQueue
+
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-def log_with_timestamp(message):
-    """Función para logging con timestamp"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] {message}")
-
-from gateway.processor import process_batch_by_type
-from gateway.serializer import serialize_message
-
-# Wrapper para manejar round-robin en exchanges escalables
-class ScalableExchangeWrapper:
-    """Wrapper que distribuye mensajes con round-robin y hace broadcast de EOS
-    
-    Cada thread tiene su propia instancia, por lo que NO necesita locks.
-    """
-    def __init__(self, exchange, num_workers):
-        self.exchange = exchange
-        self.num_workers = num_workers
-        self.current_worker = 0
-    
-    def send(self, msg, is_eos=False):
-        """Envía mensaje con round-robin o broadcast si es EOS"""
-        if is_eos:
-            # Broadcast: enviar a todos los workers usando routing key "eos"
-            # Cada worker estará escuchando tanto su routing key específica como "eos"
-            self.exchange.channel.basic_publish(
-                exchange=self.exchange.exchange_name,
-                routing_key="eos",
-                body=msg
-            )
-        else:
-            # Round-robin: enviar solo al worker actual
-            routing_key = f"worker_{self.current_worker}"
-            self.exchange.channel.basic_publish(
-                exchange=self.exchange.exchange_name,
-                routing_key=routing_key,
-                body=msg
-            )
-            # Avanzar al siguiente worker
-            self.current_worker = (self.current_worker + 1) % self.num_workers
-    
-    def close(self):
-        self.exchange.close()
+RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
 
 HOST = "0.0.0.0"
 PORT = 9000
@@ -64,6 +25,16 @@ ENTITY_TYPES = {
     3: "stores",
     4: "menu_items"
 }
+
+def log_with_timestamp(message):
+    """Función para logging con timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] {message}")
+
+from gateway.processor import process_batch_by_type
+from gateway.serializer import serialize_message
+
+
 
 def read_string(data, offset):
     """Lee un string del buffer: 4 bytes de longitud + string"""
@@ -134,6 +105,21 @@ def read_date_as_iso(data, offset):
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     return dt.date().isoformat(), new_offset
 
+def canonicalize_id(value: str) -> str:
+    """Normaliza IDs que puedan venir como números con parte decimal nula.
+    Ej: "901388.0" -> "901388". No altera IDs alfanuméricos.
+    """
+    if not isinstance(value, str):
+        value = str(value)
+    s = value.strip()
+    if '.' in s:
+        parts = s.split('.', 1)
+        integer_part = parts[0]
+        decimal_part = parts[1]
+        if decimal_part.strip('0') == '':
+            return integer_part
+    return s
+
 def parse_batch(data):
     """
     Parsea un batch binario según el protocolo:
@@ -194,7 +180,7 @@ def parse_item(data, offset, entity_type):
         # Conservar solo los campos necesarios para el reducer
         item['transaction_id'] = trans_id
         item['store_id'] = store_id
-        item['user_id'] = user_id
+        item['user_id'] = canonicalize_id(user_id)
         item['final_amount'] = final_amount
         item['created_at'] = created_at_iso
         
@@ -218,7 +204,7 @@ def parse_item(data, offset, entity_type):
         _gender, offset = read_string(data, offset)
         birthdate_iso, offset = read_date_as_iso(data, offset)
         _registered_at_iso, offset = read_datetime_as_iso(data, offset)
-        item['user_id'] = user_id
+        item['user_id'] = canonicalize_id(user_id)
         item['birthdate'] = birthdate_iso
         
     elif entity_type == "stores":
@@ -337,7 +323,6 @@ def handle_client(conn, addr, mq_map):
     # Control para saber qué tipos de entidad hemos visto y cuáles han terminado
     entity_types_seen = set()
     entity_types_eos_sent = set()
-    last_entity_type = None  # Para detectar cambios de tipo
     
     # Buffers para acumular mensajes antes de enviar (optimización de throughput)
     message_buffers = {
@@ -362,16 +347,6 @@ def handle_client(conn, addr, mq_map):
     FLUSH_INTERVAL = 5.0  # Hacer flush cada 5 segundos incluso si no se alcanza el threshold
     
     # Extraer configuración de escalado
-    config = mq_map.get("_config", {})
-    num_filter_year_workers = config.get("num_filter_year_workers", 1)
-    
-    # CREAR CONEXIONES PROPIAS PARA ESTE THREAD (no compartir conexiones)
-    # Esto evita problemas de "Channel is closed" en concurrencia
-    from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
-    import os
-    
-    RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
-    filter_year_route_keys = [f"worker_{i}" for i in range(num_filter_year_workers)] + ["eos"]
     
     # Crear conexiones exclusivas para este thread
     thread_mq_map = {}
@@ -434,13 +409,11 @@ def handle_client(conn, addr, mq_map):
                     # Procesar el batch
                     batch_count += 1
                     session.batch_count += 1
-                    processed_items = process_batch_by_type(items, entity_type)
                     
                     # Registrar que hemos visto este tipo de entidad
                     entity_types_seen.add(entity_type)
                     
                     
-                    session.total_processed += len(processed_items)
                     
                     if batch_count < 3 or batch_count % 10000 == 0:
                         print(f"[GATEWAY] Sesión {session_id}: Procesados {batch_count} batches, total registros: {session.total_processed}")
@@ -448,10 +421,8 @@ def handle_client(conn, addr, mq_map):
                         
                     # Serializar mensaje
                     msg = serialize_message(
-                        processed_items,
-                        stream_id=f"session_{session_id}",
+                        items,
                         batch_id=batch_id,
-                        is_batch_end=True,
                         is_eos=(len(items) == 0),
                         session_id=session_id
                     )
@@ -489,7 +460,7 @@ def handle_client(conn, addr, mq_map):
         # Marcar sesión como inactiva
         session.is_active = False
         
-        print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes y EOS finales...")
+        print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes ...")
         
         # Para cada tipo que vimos, hacer flush final y enviar EOS inmediatamente
         for entity_type in entity_types_seen:

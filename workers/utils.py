@@ -2,7 +2,7 @@
 def deserialize_message(body: bytes):
     """Convierte el mensaje de texto en (header_dict, rows: list[dict]).
     Formato esperado:
-      header: "type=data;stream_id=...;batch_id=...;is_batch_end=...;is_eos=...;session_id=...;"
+      header: "batch_id=...;is_eos=...;session_id=...;"
       payload: "k=v,k2=v2|k=v,...;"
     
     """
@@ -10,7 +10,7 @@ def deserialize_message(body: bytes):
         text = body.decode("utf-8").strip()
         tokens = [t for t in text.split(';') if t != '']
         # Necesitamos al menos 5 tokens para el header estándar
-        if len(tokens) < 5:
+        if len(tokens) < 3:
             raise ValueError("Mensaje demasiado corto")
 
         # Separar header de payload de forma robusta:
