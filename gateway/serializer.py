@@ -17,12 +17,9 @@ def serialize_message(rows, batch_id, is_eos=False, session_id=None) -> bytes:
     header_parts = [
         f"type=data",
         f"batch_id={batch_id}",
-        f"is_eos={is_eos_str}"
+        f"is_eos={is_eos_str}",
+        f"session_id={session_id}"
     ]
-    
-    # Agregar session_id si se proporciona
-    if session_id:
-        header_parts.append(f"session_id={session_id}")
     
     header = ";".join(header_parts) + ";"
 

@@ -105,20 +105,6 @@ def read_date_as_iso(data, offset):
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     return dt.date().isoformat(), new_offset
 
-def canonicalize_id(value: str) -> str:
-    """Normaliza IDs que puedan venir como números con parte decimal nula.
-    Ej: "901388.0" -> "901388". No altera IDs alfanuméricos.
-    """
-    if not isinstance(value, str):
-        value = str(value)
-    s = value.strip()
-    if '.' in s:
-        parts = s.split('.', 1)
-        integer_part = parts[0]
-        decimal_part = parts[1]
-        if decimal_part.strip('0') == '':
-            return integer_part
-    return s
 
 def parse_batch(data):
     """
@@ -180,7 +166,7 @@ def parse_item(data, offset, entity_type):
         # Conservar solo los campos necesarios para el reducer
         item['transaction_id'] = trans_id
         item['store_id'] = store_id
-        item['user_id'] = canonicalize_id(user_id)
+        item['user_id'] = user_id
         item['final_amount'] = final_amount
         item['created_at'] = created_at_iso
         
@@ -204,7 +190,7 @@ def parse_item(data, offset, entity_type):
         _gender, offset = read_string(data, offset)
         birthdate_iso, offset = read_date_as_iso(data, offset)
         _registered_at_iso, offset = read_datetime_as_iso(data, offset)
-        item['user_id'] = canonicalize_id(user_id)
+        item['user_id'] = user_id
         item['birthdate'] = birthdate_iso
         
     elif entity_type == "stores":
@@ -305,7 +291,7 @@ class ClientSession:
             'is_active': self.is_active
         }
 
-def handle_client(conn, addr, mq_map):
+def handle_client(conn, addr):
     # Generar ID único para esta sesión
     session_id = str(uuid.uuid4())[:8]
     session = ClientSession(session_id, addr)

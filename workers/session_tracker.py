@@ -54,7 +54,6 @@ class SessionTracker:
 
             if is_eos:
                 tipo_info["expected"] = batch_id
-                print(tipo_info)
 
             if tipo_info["expected"] is not None:
                 if len(tipo_info["ranges"]) == 1:
