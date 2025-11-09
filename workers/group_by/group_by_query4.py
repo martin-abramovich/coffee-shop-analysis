@@ -3,35 +3,18 @@ import os
 import signal
 import threading
 from collections import defaultdict
-import time
 
-# Añadir paths al PYTHONPATH
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 
-# --- Configuración ---
+
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
-
-# ID del worker (auto-detectado del hostname o env var)
-def get_worker_id():
-    worker_id_env = os.environ.get('WORKER_ID')
-    if worker_id_env is not None:
-        return int(worker_id_env)
-    
-    import socket, re
-    hostname = socket.gethostname()
-    match = re.search(r'[-_](\d+)$', hostname)
-    if match:
-        return int(match.group(1)) - 1
-    return 0
-
-WORKER_ID = get_worker_id()
+WORKER_ID = os.environ.get('WORKER_ID')
 
 INPUT_EXCHANGE = "transactions_year_query4"  # exchange dedicado para query4
-INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
 OUTPUT_EXCHANGE = "transactions_query4"      # exchange de salida para query 4
 ROUTING_KEY = "query4"                       # routing para topic
 
@@ -65,55 +48,16 @@ def group_by_store_and_user(rows):
     
     return metrics
 
-# Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
-eos_count = {}  # {session_id: count}
-eos_lock = threading.Lock()
+
+batches_sent = 0 
 
 def on_message(body):
-    global eos_count
+    global batches_sent
     header, rows = deserialize_message(body)
-    session_id = header.get("session_id", "unknown")
     
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        with eos_lock:
-            # Inicializar contador para esta sesión si no existe
-            if session_id not in eos_count:
-                eos_count[session_id] = 0
-            eos_count[session_id] += 1
-            print(f"[GroupByQuery4] EOS recibido para sesión {session_id} ({eos_count[session_id]}/{NUM_FILTER_YEAR_WORKERS})")
-            
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year para esta sesión
-            if eos_count[session_id] >= NUM_FILTER_YEAR_WORKERS:
-                print(f"[GroupByQuery4] EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
-                eos_msg = serialize_message([], header)  # Mantiene session_id en header
-                mq_out.send(eos_msg)
-                print(f"[GroupByQuery4] EOS reenviado para sesión {session_id}")
-                
-                # Limpiar contador EOS para esta sesión después de un delay
-                def delayed_cleanup():
-                    time.sleep(30)  # Esperar 30 segundos antes de limpiar
-                    with eos_lock:
-                        if session_id in eos_count:
-                            del eos_count[session_id]
-                            print(f"[GroupByQuery4] Sesión {session_id} limpiada de contadores EOS")
-                
-                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
-                cleanup_thread.start()
-        return
-    
-    # Procesamiento normal
-    total_in = len(rows)
-    
-    # Agrupar por (store_id, user_id) y contar transacciones
     store_user_metrics = group_by_store_and_user(rows)
     
-    # OPTIMIZACIÓN: Enviar de a BATCHES de 100 registros para evitar mensajes gigantes
-    BATCH_SIZE = 1000
     batch_records = []
-    total_transactions = 0
-    batches_sent = 0
-    
     for (store_id, user_id), metrics in store_user_metrics.items():
         if metrics['transaction_count'] > 0:
             # Crear un registro único con las métricas de (store, user)
@@ -123,71 +67,59 @@ def on_message(body):
                 'transaction_count': metrics['transaction_count']
             }
             batch_records.append(query4_record)
-            total_transactions += metrics['transaction_count']
-            
-            # Enviar cuando alcanzamos el tamaño del batch
-            if len(batch_records) >= BATCH_SIZE:
-                batch_header = header.copy() if header else {}
-                batch_header["group_by"] = "store_user"
-                batch_header["batch_size"] = str(len(batch_records))
-                batch_header["metrics_type"] = "query4_aggregated"
-                batch_header["batch_type"] = "grouped_metrics"
-                
-                out_msg = serialize_message(batch_records, batch_header)
-                mq_out.send(out_msg)
-                batches_sent += 1
-                batch_records = []  # Limpiar para el siguiente batch
     
-    # Enviar batch residual si queda algo
-    if batch_records:
-        batch_header = header.copy() if header else {}
-        batch_header["group_by"] = "store_user"
-        batch_header["batch_size"] = str(len(batch_records))
-        batch_header["metrics_type"] = "query4_aggregated"
-        batch_header["batch_type"] = "grouped_metrics"
-        batch_header["is_last_chunk"] = "true"
+
+    out_msg = serialize_message(batch_records, header)
+    group_by_queue.send(out_msg)
+    batches_sent += 1
+
+    
+    if batches_sent <= 3 or batches_sent % 10000 == 0:
+        total_in = len(rows)
+        unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
+        unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
         
-        out_msg = serialize_message(batch_records, batch_header)
-        mq_out.send(out_msg)
-        batches_sent += 1
-    
-    unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
-    unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
-    
-    #print(f"[GroupByQuery4] in={total_in} created={len(store_user_metrics)} sent={batches_sent}_batches stores={unique_stores} users={unique_users} tx_total={total_transactions}")
+        print(f"[GroupByQuery4] batches_sent={batches_sent} in={total_in} created={len(store_user_metrics)} stores={unique_stores} users={unique_users}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery4] Iniciando worker {WORKER_ID}...")
-    shutdown_requested = False
+    shutdown_event = threading.Event()
     
     def signal_handler(signum, frame):
-        global shutdown_requested
         print(f"[GroupByQuery4] Señal {signum} recibida, cerrando...")
-        shutdown_requested = True
-        mq_in.stop_consuming()
+        shutdown_event.set()
+        try:
+            year_trans_queue.stop_consuming()
+        except Exception as e: 
+            print(f"Error al parar el consumo: {e}")
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada: suscripción al exchange del filtro por año con routing keys específicas
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
+    year_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_year", ["transactions_year"])
+    year_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year_q4")
     
     # Salida: exchange para datos agregados de query 4
-    mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+    group_by_queue = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q4")
     
     print("[*] GroupByQuery4 worker esperando mensajes...")
-    print(f"[*] Esperando EOS de {NUM_FILTER_YEAR_WORKERS} workers de filter_year")
     try:
-        mq_in.start_consuming(on_message)
+        year_trans_queue.start_consuming(on_message)
     except KeyboardInterrupt:
         print("\n[GroupByQuery4] Interrupción recibida")
+        shutdown_event.set()
     finally:
-        try:
-            mq_in.close()
-        except:
-            pass
-        try:
-            mq_out.close()
-        except:
-            pass
+        for mq in [group_by_queue, year_trans_exchange, year_trans_queue]:
+            try:
+                mq.delete()
+            except Exception as e:
+                print(f"Error al eliminar conexión: {e}")
+    
+        # Cerrar conexiones
+        for mq in [group_by_queue, year_trans_exchange, year_trans_queue]:
+            try:
+                mq.close()
+            except Exception as e:
+                print(f"Error al cerrar conexión: {e}")
         print("[x] GroupByQuery4 worker detenido")

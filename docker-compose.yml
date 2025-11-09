@@ -33,7 +33,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -54,7 +53,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -71,7 +69,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 1
     depends_on:
       rabbitmq:
@@ -112,7 +109,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -147,7 +143,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -208,7 +203,7 @@ services:
     networks:
       - coffee-network
 
-  # Group By Query3 Workers
+  # # Group By Query3 Workers
   group_by_query3_0:
     build:
       context: .
@@ -218,7 +213,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -243,7 +237,7 @@ services:
     networks:
       - coffee-network
 
-  # Group By Query4 Workers
+  # # Group By Query4 Workers
   group_by_query4_0:
     build:
       context: .
@@ -253,7 +247,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -287,7 +280,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_FILTER_AMOUNT_WORKERS: ${NUM_FILTER_AMOUNT_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -317,7 +309,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_GROUP_BY_QUERY3_WORKERS: ${NUM_GROUP_BY_QUERY3_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -332,7 +323,6 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
-      NUM_GROUP_BY_QUERY4_WORKERS: ${NUM_GROUP_BY_QUERY4_WORKERS}
     depends_on:
       rabbitmq:
         condition: service_healthy

@@ -14,22 +14,7 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
-
-# ID del worker (auto-detectado del hostname o env var)
-def get_worker_id():
-    worker_id_env = os.environ.get('WORKER_ID')
-    if worker_id_env is not None:
-        return int(worker_id_env)
-    
-    import socket, re
-    hostname = socket.gethostname()
-    match = re.search(r'[-_](\d+)$', hostname)
-    if match:
-        return int(match.group(1)) - 1
-    return 0
-
-WORKER_ID = get_worker_id()
+WORKER_ID = os.environ.get('WORKER_ID')
 
 INPUT_EXCHANGE = "transaction_items_year_query2"  # exchange dedicado para query2
 INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
@@ -95,56 +80,18 @@ def group_by_month_and_item(rows):
     
     return metrics
 
-# Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_year por cada sesión
-eos_count = {}  # {session_id: count}
-eos_lock = threading.Lock()
 
+batches_sent = 0
+ 
 def on_message(body):
-    global eos_count
+    global batches_sent
     header, rows = deserialize_message(body)
-    session_id = header.get("session_id", "unknown")
-    
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        with eos_lock:
-            # Inicializar contador para esta sesión si no existe
-            if session_id not in eos_count:
-                eos_count[session_id] = 0
-            eos_count[session_id] += 1
-            print(f"[GroupByQuery2] EOS recibido para sesión {session_id} ({eos_count[session_id]}/{NUM_FILTER_YEAR_WORKERS})")
-            
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_year para esta sesión
-            if eos_count[session_id] >= NUM_FILTER_YEAR_WORKERS:
-                print(f"[GroupByQuery2] EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
-                eos_msg = serialize_message([], header)  # Mantiene session_id en header
-                mq_out.send(eos_msg)
-                print(f"[GroupByQuery2] EOS reenviado para sesión {session_id}")
-                
-                # Limpiar contador EOS para esta sesión después de un delay
-                def delayed_cleanup():
-                    time.sleep(30)  # Esperar 30 segundos antes de limpiar
-                    with eos_lock:
-                        if session_id in eos_count:
-                            del eos_count[session_id]
-                            print(f"[GroupByQuery2] Sesión {session_id} limpiada de contadores EOS")
-                
-                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
-                cleanup_thread.start()
-        return
-    
-    # Procesamiento normal
-    total_in = len(rows)
-    
+        
+     
     # Agrupar por (mes, item_id) y calcular métricas
     month_item_metrics = group_by_month_and_item(rows)
     
-    # OPTIMIZACIÓN: Enviar de a BATCHES de 1000 registros para evitar mensajes individuales
-    BATCH_SIZE = 1000
     batch_records = []
-    batches_sent = 0
-    total_quantity = 0
-    total_subtotal = 0.0
-    
     for (month, item_id), metrics in month_item_metrics.items():
         if metrics['total_quantity'] > 0 or metrics['total_subtotal'] > 0:
             # Crear un registro único con las métricas de (mes, item_id)
@@ -155,71 +102,53 @@ def on_message(body):
                 'total_subtotal': metrics['total_subtotal']
             }
             batch_records.append(query2_record)
-            total_quantity += metrics['total_quantity']
-            total_subtotal += metrics['total_subtotal']
-            
-            # Enviar cuando alcanzamos el tamaño del batch
-            if len(batch_records) >= BATCH_SIZE:
-                batch_header = header.copy() if header else {}
-                batch_header["group_by"] = "month_item"
-                batch_header["batch_size"] = str(len(batch_records))
-                batch_header["metrics_type"] = "query2_aggregated"
-                batch_header["batch_type"] = "grouped_metrics"
-                
-                out_msg = serialize_message(batch_records, batch_header)
-                mq_out.send(out_msg)
-                batches_sent += 1
-                batch_records = []  # Limpiar para el siguiente batch
+
     
-    # Enviar batch residual si queda algo
-    if batch_records:
-        batch_header = header.copy() if header else {}
-        batch_header["group_by"] = "month_item"
-        batch_header["batch_size"] = str(len(batch_records))
-        batch_header["metrics_type"] = "query2_aggregated"
-        batch_header["batch_type"] = "grouped_metrics"
-        batch_header["is_last_chunk"] = "true"
-        
-        out_msg = serialize_message(batch_records, batch_header)
-        mq_out.send(out_msg)
-        batches_sent += 1
+    batch_header = header.copy() if header else {}
+    batch_header["batch_size"] = str(len(batch_records))
     
-    unique_months = len(set(month for month, _ in month_item_metrics.keys()))
-    unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
-    
+    out_msg = serialize_message(batch_records, batch_header)
+    mq_out.send(out_msg)
+    batches_sent += 1
+   
     # Log compacto solo si hay datos significativos
-    # if batches_sent > 0 and len(month_item_metrics) > 100:
-    #     print(f"[GroupByQuery2] in={total_in} created={len(month_item_metrics)} sent={batches_sent}_batches months={unique_months} items={unique_items}")
+    if batches_sent <= 3 or batches_sent % 10000 == 0:
+        total_in = len(rows)
+        unique_months = len(set(month for month, _ in month_item_metrics.keys()))
+        unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
+        
+        print(f"[GroupByQuery2] batches_sent={batches_sent} in={total_in} created={len(month_item_metrics)} months={unique_months} items={unique_items}")
 
 if __name__ == "__main__":
     print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")
-    shutdown_requested = False
+    shutdown_event = threading.Event()
     
     def signal_handler(signum, frame):
-        global shutdown_requested
         print(f"[GroupByQuery2] Señal {signum} recibida, cerrando...")
-        shutdown_requested = True
-        mq_in.stop_consuming()
+        shutdown_event.set()
+        try:
+            filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year").stop_consuming()
+        except Exception as e: 
+            print(f"Error al parar el consumo: {e}")
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada: suscripción al exchange del filtro por año con routing keys específicas
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
+    year_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transaction_items_year")
     
     # Salida: exchange para datos agregados de query 2
-    mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+    mq_out = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q2")
     
     print("[*] GroupByQuery2 worker esperando mensajes...")
     print(f"[*] Consumiendo de: {INPUT_EXCHANGE} (transaction_items filtrados por año)")
-    print(f"[*] Esperando EOS de {NUM_FILTER_YEAR_WORKERS} workers de filter_year")
     try:
-        mq_in.start_consuming(on_message)
+        year_trans_item_queue.start_consuming(on_message)
     except KeyboardInterrupt:
         print("\n[GroupByQuery2] Interrupción recibida")
     finally:
         try:
-            mq_in.close()
+            filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year").close()
         except:
             pass
         try:

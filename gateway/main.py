@@ -34,10 +34,10 @@ def signal_handler(signum, frame):
     shutdown_event.set()
 
 
-def handle_client_wrapper(conn, addr, mq_map):
+def handle_client_wrapper(conn, addr):
     """Wrapper para manejar cliente con manejo de errores"""
     try:
-        handle_client(conn, addr, mq_map)
+        handle_client(conn, addr)
     except Exception as e:
         logger.error(f"Error no manejado en cliente {addr}: {e}")
     finally:
@@ -54,46 +54,6 @@ def main():
     """
     logger.info("Iniciando Gateway...")
  
-    NUM_FILTER_YEAR_WORKERS = int(os.environ.get('NUM_FILTER_YEAR_WORKERS', '3'))
-    
-    # Inicializar conexiones de salida al middleware por tipo de entidad
-    mq_map = {}
-    try:
-        # Usamos routing keys worker_0, worker_1, ... worker_N-1 para round-robin
-        # y "eos" para broadcast de EOS a todos los workers
-        filter_year_route_keys = [f"worker_{i}" for i in range(NUM_FILTER_YEAR_WORKERS)] + ["eos"]
-        
-        mq_map["transactions"] = MessageMiddlewareExchange(
-            host=RABBITMQ_HOST,
-            exchange_name="transactions_raw",
-            route_keys=filter_year_route_keys
-        )
-        mq_map["transaction_items"] = MessageMiddlewareExchange(
-            host=RABBITMQ_HOST,
-            exchange_name="transaction_items_raw",
-            route_keys=filter_year_route_keys
-        )
-        
-        # Queues simples para otros tipos
-        mq_map["users"] = MessageMiddlewareQueue(host=RABBITMQ_HOST, queue_name="users_raw")
-        mq_map["menu_items"] = MessageMiddlewareQueue(host=RABBITMQ_HOST, queue_name="menu_items_raw")
-        
-        # Exchange para stores (Q3 y Q4)
-        mq_map["stores"] = MessageMiddlewareExchange(
-            host=RABBITMQ_HOST, 
-            exchange_name="stores_raw",
-            route_keys=["q3", "q4"]
-        )
-        
-        # Guardar configuración de escalado en mq_map para usar en server.py
-        mq_map["_config"] = {
-            "num_filter_year_workers": NUM_FILTER_YEAR_WORKERS
-        }
-        
-    except Exception as e:
-        logger.error(f"No se pudo inicializar colas/exchanges del middleware: {e}")
-        return
-    
     # Iniciar handler de resultados en threads separados
     logger.info("Iniciando handler de resultados...")
     start_results_handler()
@@ -121,7 +81,7 @@ def main():
                         # Crear thread para manejar cliente
                         client_thread = threading.Thread(
                             target=handle_client_wrapper,
-                            args=(conn, addr, mq_map),
+                            args=(conn, addr),
                             name=f"Client-{addr[0]}:{addr[1]}"
                         )
                         client_thread.daemon = True
@@ -158,16 +118,6 @@ def main():
         logger.error(f"Error en servidor: {e}")
         shutdown_event.set()
     finally:
-        # Cerrar todas las conexiones de colas
-        logger.info("Cerrando conexiones de middleware...")
-        for _k, _mq in mq_map.items():
-            if _k != "_config":  # Saltar entrada de configuración
-                try:
-                    _mq.close()
-                    logger.debug(f"Conexión {_k} cerrada")
-                except Exception as e:
-                    logger.error(f"Error cerrando conexión {_k}: {e}")
-        
         logger.info("Gateway cerrado completamente")
 
 if __name__ == "__main__":

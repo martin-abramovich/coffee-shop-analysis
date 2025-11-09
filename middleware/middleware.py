@@ -51,7 +51,7 @@ class MessageMiddleware(ABC):
 
 
 class MessageMiddlewareExchange(MessageMiddleware):
-	def __init__(self, host, exchange_name, route_keys):
+	def __init__(self, host, exchange_name, route_keys: list):
 		self.host = host
 		self.exchange_name = exchange_name
 		self.route_keys = route_keys
@@ -96,6 +96,7 @@ class MessageMiddlewareExchange(MessageMiddleware):
 			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
 		except Exception as e:
 			raise MessageMiddlewareMessageError(f"Error inesperado: {e}")
+
 
 	def stop_consuming(self):
 		try:
@@ -187,6 +188,13 @@ class MessageMiddlewareQueue(MessageMiddleware):
 			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
 		except Exception as e:
 			raise MessageMiddlewareMessageError(f"Error enviando mensaje: {e}")
+
+	def bind(self, exchange_name, route_key):
+		try:
+			self.channel.exchange_declare(exchange=exchange_name, exchange_type="topic")
+			self.channel.queue_bind(exchange=exchange_name, queue=self.queue_name, routing_key=route_key)
+		except Exception as e:
+			raise MessageMiddlewareMessageError(f"Error enlazando ruta: {e}")
 
 	def close(self):
 		try:

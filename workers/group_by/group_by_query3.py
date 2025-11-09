@@ -14,22 +14,7 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-NUM_FILTER_HOUR_WORKERS = int(os.environ.get('NUM_FILTER_HOUR_WORKERS', '2'))
-
-# ID del worker (auto-detectado del hostname o env var)
-def get_worker_id():
-    worker_id_env = os.environ.get('WORKER_ID')
-    if worker_id_env is not None:
-        return int(worker_id_env)
-    
-    import socket, re
-    hostname = socket.gethostname()
-    match = re.search(r'[-_](\d+)$', hostname)
-    if match:
-        return int(match.group(1)) - 1
-    return 0
-
-WORKER_ID = get_worker_id()
+WORKER_ID = os.environ.get('WORKER_ID')
 
 INPUT_EXCHANGE = "transactions_hour"     # exchange del filtro por hora
 INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
@@ -99,54 +84,16 @@ def group_by_semester_and_store(rows):
     
     return metrics
 
-# Control de EOS por sesión - necesitamos recibir EOS de todos los workers de filter_hour por cada sesión
-eos_count = {}  # {session_id: count}
-eos_lock = threading.Lock()
+batches_sent = 0 
 
 def on_message(body):
-    global eos_count
+    global batches_sent
     header, rows = deserialize_message(body)
-    session_id = header.get("session_id", "unknown")
-    
-    # Verificar si es mensaje de End of Stream
-    if header.get("is_eos") == "true":
-        with eos_lock:
-            # Inicializar contador para esta sesión si no existe
-            if session_id not in eos_count:
-                eos_count[session_id] = 0
-            eos_count[session_id] += 1
-            print(f"[GroupByQuery3] EOS recibido para sesión {session_id} ({eos_count[session_id]}/{NUM_FILTER_HOUR_WORKERS})")
-            
-            # Solo reenviar EOS cuando hayamos recibido de TODOS los workers de filter_hour para esta sesión
-            if eos_count[session_id] >= NUM_FILTER_HOUR_WORKERS:
-                print(f"[GroupByQuery3] EOS recibido de TODOS los workers para sesión {session_id}. Reenviando downstream...")
-                eos_msg = serialize_message([], header)  # Mantiene session_id en header
-                mq_out.send(eos_msg)
-                print(f"[GroupByQuery3] EOS reenviado para sesión {session_id}")
-                
-                # Limpiar contador EOS para esta sesión después de un delay
-                def delayed_cleanup():
-                    time.sleep(30)  # Esperar 30 segundos antes de limpiar
-                    with eos_lock:
-                        if session_id in eos_count:
-                            del eos_count[session_id]
-                            print(f"[GroupByQuery3] Sesión {session_id} limpiada de contadores EOS")
-                
-                cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
-                cleanup_thread.start()
-        return
-    
-    # Procesamiento normal
-    total_in = len(rows)
     
     # Agrupar por (semestre, store_id) y calcular TPV
     semester_store_metrics = group_by_semester_and_store(rows)
     
-    # OPTIMIZACIÓN: Enviar de a BATCHES de 1000 registros para evitar mensajes individuales
-    BATCH_SIZE = 1000
     batch_records = []
-    batches_sent = 0
-    total_tpv = 0.0
     
     for (semester, store_id), metrics in semester_store_metrics.items():
         if metrics['total_payment_value'] > 0:
@@ -157,71 +104,60 @@ def on_message(body):
                 'total_payment_value': metrics['total_payment_value']
             }
             batch_records.append(query3_record)
-            total_tpv += metrics['total_payment_value']
             
-            # Enviar cuando alcanzamos el tamaño del batch
-            if len(batch_records) >= BATCH_SIZE:
-                batch_header = header.copy() if header else {}
-                batch_header["group_by"] = "semester_store"
-                batch_header["batch_size"] = str(len(batch_records))
-                batch_header["metrics_type"] = "query3_aggregated"
-                batch_header["batch_type"] = "grouped_metrics"
-                
-                out_msg = serialize_message(batch_records, batch_header)
-                mq_out.send(out_msg)
-                batches_sent += 1
-                batch_records = []  # Limpiar para el siguiente batch
+            
+    out_msg = serialize_message(batch_records, header)
+    group_by_queue.send(out_msg)
+    batches_sent += 1
+
     
-    # Enviar batch residual si queda algo
-    if batch_records:
-        batch_header = header.copy() if header else {}
-        batch_header["group_by"] = "semester_store"
-        batch_header["batch_size"] = str(len(batch_records))
-        batch_header["metrics_type"] = "query3_aggregated"
-        batch_header["batch_type"] = "grouped_metrics"
-        batch_header["is_last_chunk"] = "true"
+    if batches_sent <= 3 or batches_sent % 10000 == 0:
+        total_in = len(rows)
+        unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
+        unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
         
-        out_msg = serialize_message(batch_records, batch_header)
-        mq_out.send(out_msg)
-        batches_sent += 1
-    
-    unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
-    unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
-    # Log más compacto
-    # if batches_sent > 0:
-    #     print(f"[GroupByQuery3] in={total_in} created={len(semester_store_metrics)} sent={batches_sent}_batches semesters={unique_semesters} stores={unique_stores} tpv={total_tpv:.2f}")
+        print(f"[GroupByQuery3] batches_sent={batches_sent} in={total_in} created={len(semester_store_metrics)} semesters={unique_semesters} stores={unique_stores}")
 
 if __name__ == "__main__":
-    import threading
     print(f"[GroupByQuery3] Iniciando worker {WORKER_ID}...")
-    shutdown_requested = False
+    shutdown_event = threading.Event()
     
     def signal_handler(signum, frame):
-        global shutdown_requested
         print(f"[GroupByQuery3] Señal {signum} recibida, cerrando...")
-        mq_in.stop_consuming()
+        shutdown_event.set()
+        try:
+            hour_trans_queue.stop_consuming()
+        except Exception as e: 
+            print(f"Error al parar el consumo: {e}")
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
     # Entrada: suscripción al exchange del filtro por hora con routing keys específicas
-    mq_in = MessageMiddlewareExchange(RABBIT_HOST, INPUT_EXCHANGE, INPUT_ROUTING_KEYS)
+    hour_trans_exchange = MessageMiddlewareExchange(RABBIT_HOST, "transactions_hour", ["transactions_hour"])
+    hour_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_hour_q3")
+    hour_trans_queue.bind("transactions_hour", "transactions_hour")
     
     # Salida: exchange para datos agregados de query 3
-    mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+    group_by_queue = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q3")
     
     print("[*] GroupByQuery3 worker esperando mensajes...")
     try:
-        mq_in.start_consuming(on_message)
+        hour_trans_queue.start_consuming(on_message)
     except KeyboardInterrupt:
         print("\n[GroupByQuery3] Interrupción recibida")
     finally:
-        try:
-            mq_in.close()
-        except:
-            pass
-        try:
-            mq_out.close()
-        except:
-            pass
+        for mq in [group_by_queue, hour_trans_exchange, hour_trans_queue]:
+            try:
+                mq.delete()
+            except Exception as e:
+                print(f"Error al eliminar conexión: {e}")
+    
+        # Cerrar conexiones
+        for mq in [group_by_queue, hour_trans_exchange, hour_trans_queue]:
+            try:
+                mq.close()
+            except Exception as e:
+                print(f"Error al cerrar conexión: {e}")
+                
         print("[x] GroupByQuery3 worker detenido")
