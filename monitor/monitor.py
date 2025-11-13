@@ -82,12 +82,41 @@ class NodeStatus:
             is_up=data['is_up'],
             failed_attempts=data['failed_attempts']
         )
-        if data.get('last_check'):
-            obj.last_check = datetime.fromisoformat(data['last_check'])
-        if data.get('last_success'):
-            obj.last_success = datetime.fromisoformat(data['last_success'])
-        if data.get('last_failure'):
-            obj.last_failure = datetime.fromisoformat(data['last_failure'])
+        # Manejar last_check
+        last_check_val = data.get('last_check')
+        if last_check_val and last_check_val != 'None' and last_check_val is not None:
+            try:
+                if isinstance(last_check_val, str):
+                    obj.last_check = datetime.fromisoformat(last_check_val)
+                else:
+                    obj.last_check = last_check_val
+            except (ValueError, TypeError):
+                obj.last_check = datetime.now()
+        
+        # Manejar last_success
+        last_success_val = data.get('last_success')
+        if last_success_val and last_success_val != 'None' and last_success_val is not None:
+            try:
+                if isinstance(last_success_val, str):
+                    obj.last_success = datetime.fromisoformat(last_success_val)
+                else:
+                    obj.last_success = last_success_val
+            except (ValueError, TypeError):
+                obj.last_success = datetime.now()
+        
+        # Manejar last_failure (puede ser None)
+        last_failure_val = data.get('last_failure')
+        if last_failure_val and last_failure_val != 'None' and last_failure_val is not None:
+            try:
+                if isinstance(last_failure_val, str):
+                    obj.last_failure = datetime.fromisoformat(last_failure_val)
+                else:
+                    obj.last_failure = last_failure_val
+            except (ValueError, TypeError):
+                obj.last_failure = None
+        else:
+            obj.last_failure = None
+        
         return obj
 
 
@@ -354,20 +383,36 @@ class RedundantHealthMonitor:
     
     def start(self):
         """Inicia el monitor"""
-        # Iniciar servidor TCP
-        self.comm.start_server()
-        
-        # Iniciar elección inicial (el primero que se conecta intenta ser líder)
-        time.sleep(2.0)  # Esperar que otros monitores se conecten
-        threading.Thread(target=self._start_election, daemon=True).start()
-        
-        # Iniciar loops
-        threading.Thread(target=self.heartbeat_loop, daemon=True).start()
-        
-        if self.state == MonitorState.LEADER:
-            self.leader_loop()
-        else:
-            self.follower_loop()
+        try:
+            # Iniciar servidor TCP
+            self.comm.start_server()
+            
+            # Iniciar elección inicial (el primero que se conecta intenta ser líder)
+            time.sleep(2.0)  # Esperar que otros monitores se conecten
+            threading.Thread(target=self._start_election, daemon=True).start()
+            
+            # Iniciar loops en threads separados
+            threading.Thread(target=self.heartbeat_loop, daemon=True).start()
+            threading.Thread(target=self._main_loop, daemon=True).start()
+            
+            # Mantener el thread principal vivo
+            while not self.shutdown_event.is_set():
+                self.shutdown_event.wait(1.0)
+        except Exception as e:
+            logger.error(f"[Monitor {self.monitor_id}] Error crítico en start: {e}", exc_info=True)
+            raise
+    
+    def _main_loop(self):
+        """Loop principal que ejecuta leader_loop o follower_loop según el estado"""
+        while not self.shutdown_event.is_set():
+            try:
+                if self.state == MonitorState.LEADER:
+                    self.leader_loop()
+                else:
+                    self.follower_loop()
+            except Exception as e:
+                logger.error(f"[Monitor {self.monitor_id}] Error en loop principal: {e}", exc_info=True)
+                time.sleep(1)
     
     def stop(self):
         """Detiene el monitor"""

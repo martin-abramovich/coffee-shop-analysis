@@ -100,7 +100,11 @@ def encode_dict(d: Dict) -> bytes:
         data += encode_string(str(key))
         
         # Codificar valor según tipo
-        if isinstance(value, dict):
+        if value is None:
+            # None: tipo 6
+            data += (6).to_bytes(1, byteorder='big', signed=False)
+            # No se codifica nada más para None
+        elif isinstance(value, dict):
             # Dict anidado: tipo 0
             data += (0).to_bytes(1, byteorder='big', signed=False)
             data += encode_dict(value)
@@ -164,6 +168,9 @@ def decode_dict(data: bytes, offset: int) -> Tuple[Dict, int]:
             value, offset = decode_float(data, offset)
         elif value_type == 5:  # Bool
             value, offset = decode_bool(data, offset)
+        elif value_type == 6:  # None
+            value = None
+            # No se lee nada más para None
         else:
             raise ValueError(f"Tipo de valor desconocido: {value_type}")
         
@@ -187,7 +194,11 @@ def encode_list(l: list) -> bytes:
     
     for value in l:
         # Codificar valor según tipo (mismo formato que dict)
-        if isinstance(value, dict):
+        if value is None:
+            # None: tipo 6
+            data += (6).to_bytes(1, byteorder='big', signed=False)
+            # No se codifica nada más para None
+        elif isinstance(value, dict):
             data += (0).to_bytes(1, byteorder='big', signed=False)
             data += encode_dict(value)
         elif isinstance(value, list):
@@ -241,6 +252,9 @@ def decode_list(data: bytes, offset: int) -> Tuple[list, int]:
             value, offset = decode_float(data, offset)
         elif value_type == 5:  # Bool
             value, offset = decode_bool(data, offset)
+        elif value_type == 6:  # None
+            value = None
+            # No se lee nada más para None
         else:
             raise ValueError(f"Tipo de valor desconocido: {value_type}")
         
