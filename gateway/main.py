@@ -12,6 +12,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from gateway.server import handle_client, active_sessions, sessions_lock
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from gateway.results_handler import start_results_handler
+from common.healthcheck import start_healthcheck_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,11 @@ def main():
     Escucha conexiones TCP de múltiples clientes y procesa los datos recibidos concurrentemente.
     """
     logger.info("Iniciando Gateway...")
+    
+    # Iniciar servidor de healthcheck UDP
+    healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
+    healthcheck_thread = start_healthcheck_server(port=healthcheck_port, node_name="gateway", shutdown_event=shutdown_event)
+    logger.info(f"Healthcheck server iniciado en puerto UDP {healthcheck_port}")
  
     # Iniciar handler de resultados en threads separados
     logger.info("Iniciando handler de resultados...")

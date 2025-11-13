@@ -12,6 +12,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
 from middleware.middleware import MessageMiddlewareExchange, MessageMiddlewareQueue
 from workers.utils import deserialize_message, serialize_message
+from common.healthcheck import start_healthcheck_server
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
@@ -314,6 +315,11 @@ def consume_menu_items():
 
 if __name__ == "__main__":
     shutdown_event = threading.Event()
+    
+    # Iniciar servidor de healthcheck UDP
+    healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
+    start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query2", shutdown_event=shutdown_event)
+    print(f"[AggregatorQuery2] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
     def signal_handler(signum, frame):
         print(f"[AggregatorQuery2] Señal {signum} recibida, cerrando...")

@@ -30,9 +30,11 @@ services:
     container_name: coffee-gateway
     ports:
       - "9000:9000"
+      - "8888:8888/udp"  # Puerto UDP para healthcheck
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -53,6 +55,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -85,6 +88,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 2
     depends_on:
@@ -109,6 +113,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -125,6 +130,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
       WORKER_ID: 1
     depends_on:
@@ -143,6 +149,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -159,6 +166,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 1
     depends_on:
@@ -178,6 +186,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
       WORKER_ID: 0
     depends_on:
@@ -195,6 +204,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
       WORKER_ID: 1
     depends_on:
@@ -213,6 +223,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -229,6 +240,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_FILTER_HOUR_WORKERS: ${NUM_FILTER_HOUR_WORKERS}
       WORKER_ID: 1
     depends_on:
@@ -247,6 +259,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       WORKER_ID: 0
     depends_on:
       rabbitmq:
@@ -263,6 +276,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_FILTER_YEAR_WORKERS: ${NUM_FILTER_YEAR_WORKERS}
       WORKER_ID: 1
     depends_on:
@@ -280,6 +294,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -294,6 +309,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
       NUM_GROUP_BY_QUERY2_WORKERS: ${NUM_GROUP_BY_QUERY2_WORKERS}
     depends_on:
       rabbitmq:
@@ -309,6 +325,7 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -323,11 +340,32 @@ services:
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
+
+  # ==================== MONITOR ====================
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.monitor
+    container_name: coffee-monitor
+    environment:
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
+      CHECK_INTERVAL: ${CHECK_INTERVAL:-5.0}
+      TIMEOUT: ${TIMEOUT:-2.0}
+      MAX_FAILED_ATTEMPTS: ${MAX_FAILED_ATTEMPTS:-3}
+      # NODES puede ser configurado manualmente o usar defaults
+      # NODES: "gateway:gateway:8888,filter_year_0:filter_year_0:8888,..."
+    depends_on:
+      - gateway
+    networks:
+      - coffee-network
+    restart: unless-stopped
 
   # ==================== CLIENT ====================
   # El cliente se ejecuta manualmente cuando sea necesario
