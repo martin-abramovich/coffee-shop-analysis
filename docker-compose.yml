@@ -28,6 +28,8 @@ services:
       context: .
       dockerfile: Dockerfile.gateway
     container_name: coffee-gateway
+    labels:
+      - "role=node"
     ports:
       - "9000:9000"
       - "8888:8888/udp"  # Puerto UDP para healthcheck
@@ -51,6 +53,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-filter-year-0
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.filter.filter_year"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -68,6 +72,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-filter-year-1
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.filter.filter_year"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -84,6 +90,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-filter-year-2
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.filter.filter_year"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -109,6 +117,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-filter-hour-0
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.filter.filter_hour"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -126,6 +136,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-filter-hour-1
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.filter.filter_hour"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -145,6 +157,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-filter-amount-0
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.filter.filter_amount"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -162,6 +176,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-filter-amount-1
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.filter.filter_amount"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -182,6 +198,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-group-by-query2-0
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.group_by.group_by_query2"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -200,6 +218,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-group-by-query2-1
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.group_by.group_by_query2"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -219,6 +239,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-group-by-query3-0
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.group_by.group_by_query3"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -236,6 +258,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-group-by-query3-1
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.group_by.group_by_query3"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -255,6 +279,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-group-by-query4-0
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.group_by.group_by_query4"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -272,6 +298,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: coffee-group-by-query4-1
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.group_by.group_by_query4"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -290,6 +318,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    container_name: coffee-aggregator-query1
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.aggregator.aggregator_query1"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -305,6 +336,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    container_name: coffee-aggregator-query2
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.aggregator.aggregator_query2"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -321,6 +355,9 @@ services:
     build:
      context: .
      dockerfile: Dockerfile.worker
+    container_name: coffee-aggregator-query3
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.aggregator.aggregator_query3"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -336,6 +373,9 @@ services:
     build:
      context: .
      dockerfile: Dockerfile.worker
+    container_name: coffee-aggregator-query4
+    labels:
+      - "role=node"
     command: ["python", "-m", "workers.aggregator.aggregator_query4"]
     environment:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -369,6 +409,8 @@ services:
       - gateway
     networks:
       - coffee-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Socket Docker para revivir contenedores
     restart: unless-stopped
 
   monitor_2:
@@ -390,6 +432,8 @@ services:
       - gateway
     networks:
       - coffee-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Socket Docker para revivir contenedores
     restart: unless-stopped
 
   monitor_3:
@@ -411,6 +455,8 @@ services:
       - gateway
     networks:
       - coffee-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Socket Docker para revivir contenedores
     restart: unless-stopped
 
   # ==================== CLIENT ====================

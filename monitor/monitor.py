@@ -1,6 +1,7 @@
 """
 Monitor redundante que verifica la salud de los nodos (gateway y workers) mediante UDP healthchecks.
 Implementa algoritmo Bully para elección de líder y sincronización de estado entre réplicas.
+El monitor líder puede revivir contenedores caídos usando Docker CLI.
 """
 import socket
 import time
@@ -9,6 +10,7 @@ import logging
 import sys
 import os
 import signal
+import subprocess
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -58,6 +60,8 @@ class NodeStatus:
     last_check: datetime = field(default_factory=datetime.now)
     last_success: datetime = field(default_factory=datetime.now)
     last_failure: datetime = None
+    container_id: Optional[str] = None  # ID del contenedor Docker
+    revival_attempts: int = 0  # Intentos de revival
     
     def to_dict(self):
         """Convierte a dict para serialización"""
@@ -69,7 +73,9 @@ class NodeStatus:
             'failed_attempts': self.failed_attempts,
             'last_check': self.last_check.isoformat() if isinstance(self.last_check, datetime) else self.last_check,
             'last_success': self.last_success.isoformat() if isinstance(self.last_success, datetime) else self.last_success,
-            'last_failure': self.last_failure.isoformat() if isinstance(self.last_failure, datetime) else self.last_failure if self.last_failure else None
+            'last_failure': self.last_failure.isoformat() if isinstance(self.last_failure, datetime) else self.last_failure if self.last_failure else None,
+            'container_id': self.container_id,
+            'revival_attempts': self.revival_attempts
         }
     
     @classmethod
@@ -80,7 +86,9 @@ class NodeStatus:
             host=data['host'],
             port=data['port'],
             is_up=data['is_up'],
-            failed_attempts=data['failed_attempts']
+            failed_attempts=data['failed_attempts'],
+            container_id=data.get('container_id'),
+            revival_attempts=data.get('revival_attempts', 0)
         )
         # Manejar last_check
         last_check_val = data.get('last_check')
@@ -283,6 +291,77 @@ class RedundantHealthMonitor:
             
             self.comm.broadcast_to_all(MessageType.STATE_SYNC, {'nodes': nodes_data})
     
+    def get_container_id_by_name(self, container_name: str) -> Optional[str]:
+        """Obtiene el ID del contenedor por nombre usando Docker CLI"""
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '-a', '--filter', f'name={container_name}', '--format', '{{.ID}}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip().split('\n')[0]  # Primera línea
+            return None
+        except Exception as e:
+            logger.error(f"Error obteniendo container ID para {container_name}: {e}")
+            return None
+    
+    def get_container_ids_by_label(self, label: str = 'role=node') -> Dict[str, str]:
+        """Obtiene todos los contenedores con un label específico (nombre -> ID)"""
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '-a', '--filter', f'label={label}', '--format', '{{.Names}}:{{.ID}}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                containers = {}
+                for line in result.stdout.strip().split('\n'):
+                    if ':' in line:
+                        name, cid = line.split(':', 1)
+                        containers[name] = cid
+                return containers
+            return {}
+        except Exception as e:
+            logger.error(f"Error obteniendo contenedores con label {label}: {e}")
+            return {}
+    
+    def is_container_running(self, container_id: str) -> bool:
+        """Verifica si un contenedor está corriendo usando Docker CLI"""
+        try:
+            result = subprocess.run(
+                ['docker', 'inspect', '-f', '{{.State.Running}}', container_id],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.returncode == 0 and result.stdout.strip() == 'true'
+        except Exception as e:
+            logger.debug(f"Error verificando si contenedor {container_id} está corriendo: {e}")
+            return False
+    
+    def start_container(self, container_id: str, container_name: str) -> bool:
+        """Intenta levantar un contenedor usando Docker CLI"""
+        try:
+            logger.info(f"[REVIVAL] Intentando levantar contenedor {container_name} ({container_id})...")
+            result = subprocess.run(
+                ['docker', 'start', container_id],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                logger.info(f"[REVIVAL] ✓ Contenedor {container_name} levantado exitosamente")
+                return True
+            else:
+                logger.error(f"[REVIVAL] ✗ Error al levantar {container_name}: {result.stderr}")
+                return False
+        except Exception as e:
+            logger.error(f"[REVIVAL] ✗ Excepción al levantar {container_name}: {e}")
+            return False
+    
     def check_node(self, node: NodeStatus) -> bool:
         """Verifica un nodo individual enviando un paquete UDP"""
         sock = None
@@ -302,7 +381,7 @@ class RedundantHealthMonitor:
                     pass
     
     def check_all_nodes(self):
-        """Verifica todos los nodos (solo si es líder)"""
+        """Verifica todos los nodos y revive contenedores caídos (solo si es líder)"""
         if self.state != MonitorState.LEADER:
             return
         
@@ -318,6 +397,7 @@ class RedundantHealthMonitor:
                     if not node.is_up:
                         logger.info(f"✓ [{node.name}] NODO RECUPERADO - {node.host}:{node.port}")
                         node.is_up = True
+                        node.revival_attempts = 0  # Reset revival attempts on recovery
                 else:
                     node.failed_attempts += 1
                     node.last_failure = datetime.now()
@@ -325,6 +405,106 @@ class RedundantHealthMonitor:
                         logger.error(f"✗ [{node.name}] NODO CAÍDO - {node.host}:{node.port} "
                                         f"(fallos: {node.failed_attempts})")
                         node.is_up = False
+                        
+                        # Intentar revivir el contenedor usando Docker
+                        self._attempt_container_revival(node)
+    
+    def _attempt_container_revival(self, node: NodeStatus):
+        """Intenta revivir un contenedor caído usando Docker CLI"""
+        # Obtener container ID si no lo tenemos
+        if not node.container_id:
+            # Intentar con diferentes variantes del nombre
+            container_id = None
+            
+            # Variante 1: Nombre original
+            container_id = self.get_container_id_by_name(node.name)
+            
+            # Variante 2: Nombre con guiones en lugar de underscores (container_name style)
+            if not container_id:
+                name_with_dashes = node.name.replace('_', '-')
+                container_id = self.get_container_id_by_name(name_with_dashes)
+            
+            # Variante 3: Con prefijo coffee- (container_name completo)
+            if not container_id:
+                name_with_prefix = f"coffee-{node.name.replace('_', '-')}"
+                container_id = self.get_container_id_by_name(name_with_prefix)
+            
+            # Variante 4: Nombre del host
+            if not container_id and node.host != node.name:
+                container_id = self.get_container_id_by_name(node.host)
+            
+            if container_id:
+                node.container_id = container_id
+                logger.info(f"[REVIVAL] Contenedor encontrado: {node.name} -> {container_id[:12]}")
+            else:
+                logger.warning(f"[REVIVAL] No se encontró contenedor para {node.name}")
+                return
+        
+        # Verificar si el contenedor está corriendo a nivel Docker
+        if self.is_container_running(node.container_id):
+            logger.debug(f"[REVIVAL] Contenedor {node.name} está corriendo en Docker, "
+                        "pero no responde healthcheck")
+            return
+        
+        # Intentar levantar el contenedor
+        node.revival_attempts += 1
+        logger.info(f"[REVIVAL] Intento #{node.revival_attempts} de revivir {node.name}")
+        
+        success = self.start_container(node.container_id, node.name)
+        
+        if success:
+            # Esperar un poco para que el contenedor se inicialice
+            time.sleep(2)
+            # Verificar si ahora responde healthcheck
+            if self.check_node(node):
+                logger.info(f"[REVIVAL] ✓✓ {node.name} revivido y respondiendo!")
+                node.is_up = True
+                node.failed_attempts = 0
+                node.revival_attempts = 0
+            else:
+                logger.warning(f"[REVIVAL] Contenedor {node.name} levantado pero aún no responde healthcheck")
+    
+    def update_container_mapping(self):
+        """Actualiza el mapeo de nombres de nodo a IDs de contenedor"""
+        if self.state != MonitorState.LEADER:
+            return
+        
+        # Obtener todos los contenedores con label role=node
+        containers = self.get_container_ids_by_label('role=node')
+        
+        with self.lock:
+            for node_name, node in self.nodes.items():
+                # Buscar el contenedor por nombre con diferentes estrategias
+                for container_name, container_id in containers.items():
+                    # Normalizar nombres para comparación (reemplazar - por _ y _ por -)
+                    normalized_node = node.name.replace('_', '-').replace('-', '_')
+                    normalized_container = container_name.replace('_', '-').replace('-', '_')
+                    
+                    # Estrategias de match:
+                    # 1. Match exacto del nombre del nodo
+                    if node.name in container_name:
+                        node.container_id = container_id
+                        logger.debug(f"Mapeado {node.name} -> {container_name} ({container_id[:12]})")
+                        break
+                    
+                    # 2. Match con nombre normalizado (underscores ↔ guiones)
+                    if normalized_node in normalized_container:
+                        node.container_id = container_id
+                        logger.debug(f"Mapeado {node.name} -> {container_name} ({container_id[:12]})")
+                        break
+                    
+                    # 3. Match del nombre del nodo con guiones reemplazados
+                    node_with_dashes = node.name.replace('_', '-')
+                    if node_with_dashes in container_name:
+                        node.container_id = container_id
+                        logger.debug(f"Mapeado {node.name} -> {container_name} ({container_id[:12]})")
+                        break
+                    
+                    # 4. Match del host name
+                    if node.host in container_name:
+                        node.container_id = container_id
+                        logger.debug(f"Mapeado {node.name} -> {container_name} ({container_id[:12]})")
+                        break
     
     def leader_loop(self):
         """Loop del líder: verifica nodos y sincroniza estado"""
@@ -390,6 +570,12 @@ class RedundantHealthMonitor:
             # Iniciar elección inicial (el primero que se conecta intenta ser líder)
             time.sleep(2.0)  # Esperar que otros monitores se conecten
             threading.Thread(target=self._start_election, daemon=True).start()
+            
+            # Esperar a que se elija un líder e inicializar mapeo de contenedores
+            time.sleep(3.0)
+            if self.state == MonitorState.LEADER:
+                logger.info("Inicializando mapeo de contenedores Docker...")
+                self.update_container_mapping()
             
             # Iniciar loops en threads separados
             threading.Thread(target=self.heartbeat_loop, daemon=True).start()
