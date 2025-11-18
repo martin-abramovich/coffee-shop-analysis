@@ -377,12 +377,6 @@ if __name__ == "__main__":
                 print(f"Error al parar el consumo: {e}")
         
         
-        for mq in [mq_metrics, mq_menu_items, mq_out]:
-            try:
-                mq.delete()
-            except Exception as e:
-                print(f"Error al eliminar conexión: {e}")
-    
         # Cerrar conexiones
         for mq in [mq_metrics, mq_menu_items, mq_out]:
             try:

@@ -201,12 +201,6 @@ if __name__ == "__main__":
         shutdown_event.set()
     finally:
         
-        for mq in [amount_trans_queue, results_queue]:
-            try:
-                mq.delete()
-            except Exception as e:
-                print(f"Error al eliminar conexión: {e}")
-    
         # Cerrar conexiones
         for mq in [amount_trans_queue, results_queue]:
             try:
