@@ -5,6 +5,7 @@ import os
 import threading
 import signal
 import time
+import json
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -23,11 +24,13 @@ logger = logging.getLogger(__name__)
 LISTEN_HOST = "0.0.0.0"  # Para escuchar conexiones TCP
 PORT = 9000  # Puerto para recibir del cliente
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')  # Hostname de RabbitMQ
+MAX_CONCURRENT_CLIENTS = int(os.environ.get('MAX_CONCURRENT_CLIENTS', '2'))
 
 # Control de shutdown
 shutdown_event = threading.Event()
 active_threads = []
 threads_lock = threading.Lock()
+client_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CLIENTS)
 
 def signal_handler(signum, frame):
     """Maneja señales para graceful shutdown"""
@@ -46,7 +49,32 @@ def handle_client_wrapper(conn, addr):
             conn.close()
         except:
             pass
+        finally:
+            client_slots.release()
         logger.info(f"Thread para cliente {addr} terminado")
+
+
+def reject_client_connection(conn):
+    """Envía una respuesta de rechazo cuando se alcanza el límite de clientes."""
+    try:
+        response_body = {
+            "status": "ERROR",
+            "error": "MAX_CLIENTS_REACHED",
+            "message": (
+                f"El gateway alcanzó el máximo de {MAX_CONCURRENT_CLIENTS} clientes simultáneos. "
+                "Intente nuevamente más tarde."
+            )
+        }
+        payload = json.dumps(response_body).encode('utf-8')
+        header = len(payload).to_bytes(4, byteorder='big')
+        conn.sendall(header + payload)
+    except Exception as send_err:
+        logger.debug(f"No se pudo notificar rechazo de conexión: {send_err}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def main():
     """
@@ -83,7 +111,16 @@ def main():
                     try:
                         conn, addr = s.accept()
                         logger.info(f"[GATEWAY] Nueva conexión desde {addr}")
-                        
+
+                        if not client_slots.acquire(blocking=False):
+                            logger.warning(
+                                "[GATEWAY] Límite de clientes simultáneos alcanzado (%d). Rechazando %s",
+                                MAX_CONCURRENT_CLIENTS,
+                                addr,
+                            )
+                            reject_client_connection(conn)
+                            continue
+
                         # Crear thread para manejar cliente
                         client_thread = threading.Thread(
                             target=handle_client_wrapper,
@@ -91,7 +128,13 @@ def main():
                             name=f"Client-{addr[0]}:{addr[1]}"
                         )
                         client_thread.daemon = True
-                        client_thread.start()
+                        try:
+                            client_thread.start()
+                        except Exception as thread_error:
+                            client_slots.release()
+                            logger.error(f"No se pudo iniciar thread para {addr}: {thread_error}")
+                            reject_client_connection(conn)
+                            continue
                         
                         with threads_lock:
                             active_threads.append(client_thread)

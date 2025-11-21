@@ -86,6 +86,7 @@ class Client:
         with self._lock:
             return self._shutdown_requested
 
+
     def __enter__(self):
         """Context manager entry"""
         self.connect()

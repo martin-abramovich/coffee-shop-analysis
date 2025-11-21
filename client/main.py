@@ -270,6 +270,11 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                 continue
             except Exception as e:
                 logging.error(f"Error enviando batch: {e}", exc_info=True)
+                if isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ConnectionError, OSError)):
+                    logging.error("La conexión con el gateway se cerró; deteniendo envío.")
+                    stop_event.set()
+                    client.request_shutdown()
+                    break
                 continue
         logging.info(f"Hilo enviador terminado. Total enviado: {total_batches_sent} batches, {total_entities_sent} entidades")
     except Exception as e:
