@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 LISTEN_HOST = "0.0.0.0"  # Para escuchar conexiones TCP
 PORT = 9000  # Puerto para recibir del cliente
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')  # Hostname de RabbitMQ
-MAX_CONCURRENT_CLIENTS = int(os.environ.get('MAX_CONCURRENT_CLIENTS', '2'))
+MAX_CONCURRENT_CLIENTS = int(os.environ.get('MAX_CONCURRENT_CLIENTS', '5'))
 
 # Control de shutdown
 shutdown_event = threading.Event()
