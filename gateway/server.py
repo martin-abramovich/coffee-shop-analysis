@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+import json
 from datetime import datetime, timezone
 
 from middleware.middleware import MessageMiddlewareExchange, MessageMiddlewareQueue
@@ -33,8 +34,10 @@ def log_with_timestamp(message):
 
 from gateway.processor import process_batch_by_type
 from gateway.serializer import serialize_message
+from gateway.result_dispatcher import result_dispatcher
+from gateway.results_handler import RESULT_EXCHANGES
 
-
+EXPECTED_RESULT_QUERIES = set(RESULT_EXCHANGES.keys())
 
 def read_string(data, offset):
     """Lee un string del buffer: 4 bytes de longitud + string"""
@@ -295,6 +298,7 @@ def handle_client(conn, addr):
     # Generar ID único para esta sesión
     session_id = str(uuid.uuid4())[:8]
     session = ClientSession(session_id, addr)
+    result_dispatcher.register_session(session_id)
     
     # Registrar sesión activa
     with sessions_lock:
@@ -461,16 +465,37 @@ def handle_client(conn, addr):
                     except Exception as e:
                         print(f"[GATEWAY] Sesión {session_id}: Error en flush de {entity_type}: {e}")
                 
-        
-        
-        # Enviar ACK final al cliente (4 bytes longitud + payload UTF-8)
+        results_payload = {}
+        missing_queries = []
         try:
-            summary = f"OK session={session_id} batches={session.batch_count} total_records={session.total_processed}"
-            payload = summary.encode('utf-8')
+            expected = EXPECTED_RESULT_QUERIES if EXPECTED_RESULT_QUERIES else None
+            results_payload, missing_queries = result_dispatcher.wait_for_results(
+                session_id,
+                expected_queries=expected,
+                timeout=None,
+            )
+        except Exception as wait_error:
+            print(f"[GATEWAY] Sesión {session_id}: Error esperando resultados: {wait_error}")
+        finally:
+            result_dispatcher.cleanup_session(session_id)
+        
+        # Enviar ACK final al cliente (4 bytes longitud + JSON UTF-8)
+        try:
+            summary_text = f"OK session={session_id} batches={session.batch_count} total_records={session.total_processed}"
+            response_body = {
+                "status": "OK",
+                "session_id": session_id,
+                "batch_count": session.batch_count,
+                "total_processed": session.total_processed,
+                "summary": summary_text,
+                "results": results_payload,
+                "missing_results": missing_queries,
+            }
+            payload = json.dumps(response_body).encode('utf-8')
             header = len(payload).to_bytes(4, byteorder='big')
             conn.sendall(header + payload)
-        except Exception:
-            pass
+        except Exception as send_error:
+            print(f"[GATEWAY] Sesión {session_id}: Error enviando respuesta final: {send_error}")
         # Cerrar conexiones del thread
         print(f"[GATEWAY] Sesión {session_id}: Cerrando conexiones RabbitMQ...")
         for entity_type, mq in thread_mq_map.items():

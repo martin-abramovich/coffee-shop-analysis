@@ -219,3 +219,30 @@ El sistema incluye un gestor de recursos que:
 ### Tests fallan
 - Asegurar que no hay otros procesos usando el puerto 9000
 - Verificar que RabbitMQ esté disponible para tests que lo requieren
+
+## 🐒 Chaos Monkey (Tolerancia a Fallas)
+
+Usamos `scripts/chaos_monkey.py` para matar o reiniciar contenedores aleatoriamente y validar la resiliencia del sistema.
+
+```bash
+# Ataques básicos cada 20-60s sobre contenedores etiquetados role=node
+python scripts/chaos_monkey.py
+
+# Configuración personalizada
+python scripts/chaos_monkey.py \
+  --min-interval 10 \
+  --max-interval 30 \
+  --strategy restart \
+  --exclude coffee-gateway coffee-monitor-1 coffee-monitor-2 coffee-monitor-3
+
+# Ensayo reproducible con semilla y cantidad finita de acciones
+python scripts/chaos_monkey.py --seed 42 --max-actions 5
+```
+
+Parámetros útiles:
+- `--label`: filtra contenedores por label Docker (default `role=node`)
+- `--include/--exclude`: restringen contenedores por nombre
+- `--strategy`: `kill`, `stop` o `restart`
+- `--min-interval` / `--max-interval`: intervalo aleatorio entre fallos
+- `--duration` o `--max-actions`: límites de ejecución
+- `--dry-run`: imprime las acciones sin ejecutarlas

@@ -11,6 +11,7 @@ from collections import defaultdict
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from middleware.middleware import MessageMiddlewareExchange
 from workers.utils import deserialize_message
+from gateway.result_dispatcher import result_dispatcher
 
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 OUTPUT_DIR = './results'
@@ -30,8 +31,7 @@ class ResultsHandler:
         self.results = defaultdict(lambda: defaultdict(list))
         # Lock para proteger acceso concurrente a self.results
         self.lock = threading.Lock()
-        os.makedirs(self.output_dir, exist_ok=True)
-        print(f"[ResultsHandler] Directorio: {self.output_dir}")
+        print(f"[ResultsHandler] Directorio (deprecated): {self.output_dir}")
     
     def collect_result(self, query_name, rows, header):
         session_id = header.get('session_id', 'default')
@@ -52,39 +52,60 @@ class ResultsHandler:
             print(f"[ResultsHandler] {query_name} (sesión {session_id}): Batch {batch_num}/{total_batches} acumulado={current_count}")
             
             if batch_num == total_batches:
-                print(f"[ResultsHandler] Último batch recibido para {query_name} (sesión {session_id}), guardando resultados...")
-                self.save_results(query_name, header, session_id)
+                print(f"[ResultsHandler] Último batch recibido para {query_name} (sesión {session_id}), despachando resultados al cliente...")
+                self.dispatch_results(query_name, header, session_id)
         else:
             print(f"[ResultsHandler] Mensaje ignorado - is_final_result={header.get('is_final_result')}")
     
-    def save_results(self, query_name, header, session_id):
+    def dispatch_results(self, query_name, header, session_id):
         # Proteger lectura de results con lock
         with self.lock:
-            results_list = self.results[session_id][query_name].copy()
+            session_bucket = self.results.get(session_id, {})
+            query_rows = session_bucket.get(query_name, [])
+            results_list = list(query_rows)
+            session_bucket.pop(query_name, None)
+            if not session_bucket and session_id in self.results:
+                del self.results[session_id]
         
         if not results_list:
             return
         
-        # Crear directorio por sesión para evitar sobrescritura en ejecuciones concurrentes
-        session_dir = os.path.join(self.output_dir, f"session_{session_id}")
-        os.makedirs(session_dir, exist_ok=True)
-        
-        # Archivo en directorio de la sesión
-        output_file = os.path.join(session_dir, f"{query_name}.csv")
-        
-        columns = list(results_list[0].keys())
-        
-        # Guardar SOLO en directorio de sesión (no sobrescribir archivos generales)
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(','.join(columns) + '\n')
-            for row in results_list:
-                values = [str(row.get(col, '')) for col in columns]
-                f.write(','.join(values) + '\n')
-        
+        columns = self._resolve_columns(header, results_list)
+        metadata = {
+            'batch_number': header.get('batch_number'),
+            'total_batches': header.get('total_batches'),
+            'description': header.get('description'),
+            'total_results': header.get('total_results'),
+            'stream_id': header.get('stream_id'),
+        }
+
+        payload = {
+            'query': query_name,
+            'columns': columns,
+            'rows': results_list,
+            'metadata': metadata,
+        }
+
+        result_dispatcher.submit_result(session_id, query_name, payload)
+
         print(f"\n{'='*60}")
         print(f"[ResultsHandler] {query_name} COMPLETADO (sesión {session_id})")
-        print(f"[ResultsHandler] Resultados de {query_name} guardados en {output_file}")
+        print(f"[ResultsHandler] Resultados enviados al cliente (total filas: {len(results_list)})")
         print(f"{'='*60}\n")
+
+    def _resolve_columns(self, header, results_list):
+        if not results_list:
+            return []
+
+        header_columns = header.get('columns')
+        if header_columns:
+            separator = ',' if ',' in header_columns else ':'
+            cols = [col.strip() for col in header_columns.split(separator) if col.strip()]
+            if cols:
+                return cols
+
+        # Fallback: usar las claves del primer registro preservando orden de inserción
+        return list(results_list[0].keys())
 
 def start_results_handler():
     """Inicia el handler de resultados en threads separados"""

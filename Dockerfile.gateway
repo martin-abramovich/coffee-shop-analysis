@@ -7,6 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código
+COPY common/ ./common/
 COPY middleware/ ./middleware/
 COPY gateway/ ./gateway/
 COPY workers/ ./workers/

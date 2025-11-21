@@ -18,6 +18,7 @@ def log_with_timestamp(message):
     print(f"[{timestamp}] {message}")
 
 from middleware.middleware import MessageMiddlewareExchange, MessageMiddlewareQueue
+from common.healthcheck import start_healthcheck_server
 from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
@@ -372,6 +373,11 @@ def consume_users():
 
 if __name__ == "__main__":    
     shutdown_event = threading.Event()
+    
+    # Iniciar servidor de healthcheck UDP
+    healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
+    start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query4", shutdown_event=shutdown_event)
+    print(f"[AggregatorQuery4] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
     def signal_handler(signum, frame):
         print(f"[AggregatorQuery4] Señal {signum} recibida, cerrando...")

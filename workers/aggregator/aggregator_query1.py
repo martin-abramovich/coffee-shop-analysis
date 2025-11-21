@@ -9,6 +9,8 @@ from workers.session_tracker import SessionTracker
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
+from common.healthcheck import start_healthcheck_server
+
 def log_with_timestamp(message):
     """Función para logging con timestamp"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -166,6 +168,11 @@ if __name__ == "__main__":
     import threading
     
     shutdown_event = threading.Event()
+    
+    # Iniciar servidor de healthcheck UDP
+    healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
+    start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query1", shutdown_event=shutdown_event)
+    print(f"[AggregatorQuery1] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
     def signal_handler(signum, frame):
         print(f"[AggregatorQuery1] Señal {signum} recibida, cerrando...")

@@ -9,6 +9,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
+from common.healthcheck import start_healthcheck_server
 
 
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
@@ -84,6 +85,11 @@ def on_message(body):
 if __name__ == "__main__":
     print(f"[GroupByQuery4] Iniciando worker {WORKER_ID}...")
     shutdown_event = threading.Event()
+    
+    # Iniciar servidor de healthcheck UDP
+    healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
+    start_healthcheck_server(port=healthcheck_port, node_name=f"group_by_query4_{WORKER_ID}", shutdown_event=shutdown_event)
+    print(f"[GroupByQuery4 Worker {WORKER_ID}] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
     def signal_handler(signum, frame):
         print(f"[GroupByQuery4] Señal {signum} recibida, cerrando...")
