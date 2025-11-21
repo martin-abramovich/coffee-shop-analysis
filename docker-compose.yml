@@ -467,12 +467,14 @@ services:
       dockerfile: Dockerfile.client
     environment:
       GATEWAY_HOST: gateway
+      CLIENT_RESULTS_DIR: /app/results
     depends_on:
       - gateway
     networks:
       - coffee-network
     volumes:
       - ./.data:/app/.data:ro # Montar datos como solo lectura
+      - ./results:/app/results
     profiles:
       - manual # No se inicia automáticamente
     # Ejemplo de uso:

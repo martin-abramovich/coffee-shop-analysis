@@ -1,5 +1,8 @@
 import logging
+import json
+import csv
 from pathlib import Path
+from typing import Optional
 from common.client import Client
 from common.protocol import batch_eos, entity_batch_iterator
 import os
@@ -12,6 +15,7 @@ import time
 
 # Variable global para el cliente (necesario para signal handler)
 global_client = None
+DEFAULT_RESULTS_DIR = Path(os.environ.get("CLIENT_RESULTS_DIR", "./results"))
 
 def setup_logging(level: str):
     """Configura el logger global"""
@@ -74,6 +78,51 @@ def load_config(config_path="config.ini", data_subfolder=None):
         'stream_id': config.get('CLIENT', 'stream_id', fallback='report-123'),
         'log_level': config.get('LOGGING', 'log_level', fallback='INFO'),
     }
+
+def store_results_locally(response_text: str, output_root: Optional[Path] = None):
+    """
+    Genera los archivos CSV de resultados usando la respuesta JSON enviada por el gateway.
+    Si la respuesta no es JSON (compatibilidad hacia atrás), solo se loguea el contenido.
+    """
+    try:
+        payload = json.loads(response_text)
+    except json.JSONDecodeError:
+        logging.info("Respuesta del servidor: %s", response_text)
+        return
+
+    results = payload.get("results") or {}
+    session_id = payload.get("session_id", "unknown")
+
+    if not results:
+        logging.warning("Respuesta recibida sin resultados para la sesión %s.", session_id)
+        return
+
+    base_dir = output_root or DEFAULT_RESULTS_DIR
+    output_dir = base_dir / f"session_{session_id}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for query_name, data in results.items():
+        rows = data.get("rows") or []
+        if not rows:
+            logging.warning("No hay filas para %s; se omite la creación de CSV.", query_name)
+            continue
+
+        columns = data.get("columns")
+        if not columns:
+            columns = list(rows[0].keys())
+
+        file_path = output_dir / f"{query_name}.csv"
+        with open(file_path, "w", newline='', encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=columns)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({col: row.get(col, '') for col in columns})
+
+        logging.info("Resultados de %s guardados en %s (%d filas)", query_name, file_path, len(rows))
+
+    missing = payload.get("missing_results") or []
+    if missing:
+        logging.warning("Queries sin resultado recibido: %s", ", ".join(missing))
 
 def csv_reader_transacctions_thread(base_path: str, batch_size: int, data_queue: queue.Queue, stop_event: threading.Event):
     logging.debug("Hilo lector iniciado")
@@ -335,7 +384,7 @@ def main():
                     response = client.receive_response()
                     elapsed = time.time() - start_time
                     logging.info(f"Tiempo total desde envío hasta confirmación: {elapsed:.2f}s")
-                    logging.debug(f"Respuesta del servidor: {response}")
+                    store_results_locally(response)
                     
                 except Exception as e:
                    logging.error(f"No se pudo recibir respuesta del servidor: {e}", exc_info=True)
