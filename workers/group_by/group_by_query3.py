@@ -147,12 +147,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n[GroupByQuery3] Interrupción recibida")
     finally:
-        for mq in [group_by_queue, hour_trans_exchange, hour_trans_queue]:
-            try:
-                mq.delete()
-            except Exception as e:
-                print(f"Error al eliminar conexión: {e}")
-    
         # Cerrar conexiones
         for mq in [group_by_queue, hour_trans_exchange, hour_trans_queue]:
             try:

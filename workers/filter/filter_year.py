@@ -158,14 +158,8 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Error al parar el consumo: {e}")
                 
-        for mq in [trans_queue, trans_item_queue, filter_trans_exchange, filter_trans_item_queue, filter_trans_queue_q1, filter_trans_queue_q4]:
-            try:
-                mq.delete()
-            except Exception as e:
-                print(f"Error al eliminar conexión: {e}")
-    
         # Cerrar conexiones
-        for mq in [trans_queue, trans_item_queue, filter_trans_exchange, filter_trans_item_queue]:
+        for mq in [trans_queue, trans_item_queue, filter_trans_exchange, filter_trans_item_queue, filter_trans_queue_q1, filter_trans_queue_q4]:
             try:
                 mq.close()
             except Exception as e:

@@ -112,12 +112,6 @@ if __name__ == "__main__":
         print("\n[FilterHour] Interrupción recibida")
         shutdown_event.set()
     finally:    
-        for mq in [year_trans_queue, year_trans_exchange, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
-            try:
-                mq.delete()
-            except Exception as e:
-                print(f"Error al eliminar conexión: {e}")
-    
         # Cerrar conexiones
         for mq in [year_trans_queue, year_trans_exchange, hour_trans_exchange, hour_trans_queue_q1, hour_trans_queue_q3]:
             try:
