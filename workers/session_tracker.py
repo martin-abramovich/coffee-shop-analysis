@@ -35,6 +35,33 @@ class SessionTracker:
             merged.append((new_start, new_end))
         return merged
 
+    def previus_update(self, session_id:str, entity_type:str, batch_id: int) -> bool:
+        """
+        Devuelve True si el batch_id ya fue procesado previamente.
+        No modifica el estado.
+        """
+        # Si la sesión no existe, seguro no se procesó
+        if session_id not in self.sessions:
+            return False
+
+        session_info = self.sessions[session_id]
+
+        # Si ese tipo aún no tiene registros → tampoco se procesó
+        if entity_type not in session_info:
+            return False
+
+        # Sección crítica por tipo
+        with session_info["_lock"]:
+            ranges = session_info[entity_type].get("ranges", [])
+            
+            for start, end in ranges:
+                if start <= batch_id <= end:
+                    return True
+
+        return False
+
+            
+         
     def update(self, session_id: str, entity_type: str, batch_id: int, is_eos: bool) -> bool:
         """
         Actualiza el estado de una sesión para un tipo específico.
@@ -72,3 +99,26 @@ class SessionTracker:
                 return True
 
         return False
+    
+    def get_single_session_snapshot(self, session_id):
+        """Retorna el estado limpio (sin locks) de UNA sesión específica."""
+        if session_id not in self.sessions:
+            return None
+            
+        session_info = self.sessions[session_id]
+        snapshot = {}
+        
+        # Usamos el lock de la sesión para leer consistentemente
+        with session_info["_lock"]:
+            for key, val in session_info.items():
+                if key == "_lock": continue
+                snapshot[key] = val
+        return snapshot
+    
+    def load_state_snapshot(self, snapshot):
+        """Reconstruye el estado desde un snapshot."""
+        with self.global_lock:
+            self.sessions.clear()
+            for session_id, data in snapshot.items():
+                self.sessions[session_id] = data
+                self.sessions[session_id]["_lock"] = threading.Lock()

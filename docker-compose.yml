@@ -326,11 +326,14 @@ services:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
       HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
+      LOG_LEVEL: INFO
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
+    volumes:
+    - ./state/agregator1:/app/state
 
   aggregator_query2:
     build:
