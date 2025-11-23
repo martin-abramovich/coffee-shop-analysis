@@ -1,3 +1,4 @@
+import logging
 import sys
 import os
 import signal
@@ -14,6 +15,7 @@ from workers.utils import deserialize_message, serialize_message
 from common.healthcheck import start_healthcheck_server
 
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
 INPUT_QUEUE = "group_by_q3"    
 
@@ -64,7 +66,7 @@ class AggregatorQuery3:
             if store_id and store_name:
                 session_data['store_id_to_name'][store_id] = store_name.strip()
         
-        print(f"[AggregatorQuery3] Sesión {session_id}: Cargadas {len(session_data['store_id_to_name'])} stores para JOIN")
+        logger.info(f"[AggregatorQuery3] Sesión {session_id}: Cargadas {len(session_data['store_id_to_name'])} stores para JOIN")
     
     def __accumulate_tpv(self, rows, session_id):
         """Acumula TPV parciales de group_by_query3 para una sesión específica."""
@@ -95,22 +97,22 @@ class AggregatorQuery3:
         session_data['batches_received'] += 1
         
         if session_data['batches_received'] % 10000 == 0 or session_data['batches_received'] == 1:
-            print(f"[AggregatorQuery3] Sesión {session_id}: Procesado batch {session_data['batches_received']} con {len(rows)} registros. Total combinaciones: {len(session_data['semester_store_tpv'])}")
+            logger.info(f"[AggregatorQuery3] Sesión {session_id}: Procesado batch {session_data['batches_received']} con {len(rows)} registros. Total combinaciones: {len(session_data['semester_store_tpv'])}")
     
     def __generate_final_results(self, session_id):
         """Genera los resultados finales para Query 3 con JOIN para una sesión específica."""
         session_data = self.__get_session_data(session_id)
         
-        print(f"[AggregatorQuery3] Generando resultados finales para sesión {session_id}...")
-        print(f"[AggregatorQuery3] Total combinaciones procesadas: {len(session_data['semester_store_tpv'])}")
-        print(f"[AggregatorQuery3] Stores disponibles para JOIN: {len(session_data['store_id_to_name'])}")
+        logger.info(f"[AggregatorQuery3] Generando resultados finales para sesión {session_id}...")
+        logger.info(f"[AggregatorQuery3] Total combinaciones procesadas: {len(session_data['semester_store_tpv'])}")
+        logger.info(f"[AggregatorQuery3] Stores disponibles para JOIN: {len(session_data['store_id_to_name'])}")
         
         if not session_data['semester_store_tpv']:
-            print(f"[AggregatorQuery3] No hay datos para procesar en sesión {session_id}")
+            logger.warning(f"[AggregatorQuery3] No hay datos para procesar en sesión {session_id}")
             return []
         
         if not session_data['store_id_to_name']:
-            print(f"[AggregatorQuery3] WARNING: No hay stores cargadas para sesión {session_id}. No se puede hacer JOIN.")
+            logger.warning(f"[AggregatorQuery3] WARNING: No hay stores cargadas para sesión {session_id}. No se puede hacer JOIN.")
             return []
         
         final_results = []
@@ -121,7 +123,7 @@ class AggregatorQuery3:
             store_name = session_data['store_id_to_name'].get(store_id)
             
             if not store_name:
-                print(f"[AggregatorQuery3] WARNING: store_id {store_id} no encontrado en stores")
+                logger.warning(f"[AggregatorQuery3] WARNING: store_id {store_id} no encontrado en stores")
                 continue
                         
             final_results.append({
@@ -133,14 +135,14 @@ class AggregatorQuery3:
         # Ordenar por semestre y luego por store_name para consistencia
         final_results.sort(key=lambda x: (x['year_half_created_at'], x['store_name']))
         
-        print(f"[AggregatorQuery3] Resultados generados: {len(final_results)} combinaciones")
+        logger.info(f"[AggregatorQuery3] Resultados generados: {len(final_results)} combinaciones")
               
         return final_results
 
     def __generate_and_send_results(self, session_id):
         """Genera y envía los resultados finales cuando ambos flujos terminaron para una sesión específica."""
 
-        print(f"[AggregatorQuery3] Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
+        logger.info(f"[AggregatorQuery3] Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
 
         # Generar resultados finales para esta sesión
         final_results = aggregator.__generate_final_results(session_id)
@@ -173,14 +175,14 @@ class AggregatorQuery3:
                 result_msg = serialize_message(batch, batch_header)
                 self.results_exchange.send(result_msg)
 
-        print(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
+        logger.info(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
     
     def __on_tpv_message(self, body):
         """Maneja mensajes de TPV de group_by_query3."""
         try:
             header, rows = deserialize_message(body)
         except Exception as e:
-            print(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
+            logger.error(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
             return
             
         session_id = header.get("session_id", "unknown")
@@ -188,7 +190,7 @@ class AggregatorQuery3:
         is_eos = header.get("is_eos") == "true"
 
         if is_eos:
-            print(f"[AggregatorQuery3] Recibido mensaje EOS en TPV para sesión {session_id}, batch_id {bach_id}")
+            logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en TPV para sesión {session_id}, batch_id {bach_id}")
             
         if rows:
             aggregator.__accumulate_tpv(rows, session_id)
@@ -203,19 +205,19 @@ class AggregatorQuery3:
         try:
             header, rows = deserialize_message(body)
         except Exception as e:
-            print(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
+            logger.error(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
             return
         
         session_id = header.get("session_id", "unknown")
         bach_id = int(header.get("batch_id", -1))
         if bach_id == -1:
-            print(f"[AggregatorQuery3] WARNING: batch_id inválido en sesión {session_id}")
+            logger.info(f"[AggregatorQuery3] WARNING: batch_id inválido en sesión {session_id}")
             return
 
         is_eos = header.get("is_eos") == "true"
         
         if is_eos:
-            print(f"[AggregatorQuery3] Recibido mensaje EOS en Stores para sesión {session_id}, batch_id {bach_id}")
+            logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en Stores para sesión {session_id}, batch_id {bach_id}")
         
         if rows:
             aggregator.__load_stores(rows, session_id)
@@ -230,14 +232,14 @@ class AggregatorQuery3:
             self.tpv_queue.start_consuming(self.__on_tpv_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
-                print(f"[AggregatorQuery3] Error en consumo de TPV: {e}")
+                logger.error(f"[AggregatorQuery3] Error en consumo de TPV: {e}")
         
     def __consume_stores(self):
         try:
             self.stores_exchange.start_consuming(self.__on_stores_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
-                print(f"[AggregatorQuery3] Error en consumo de stores: {e}")
+                logger.error(f"[AggregatorQuery3] Error en consumo de stores: {e}")
             
     def __init_middleware(self):
         # Entrada 1: TPV del group_by_query
@@ -250,7 +252,7 @@ class AggregatorQuery3:
         self.results_exchange = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
 
     def __signal_handler(self, signum, frame):
-        print(f"[AggregatorQuery3] Señal {signum} recibida, cerrando...")
+        logger.info(f"[AggregatorQuery3] Señal {signum} recibida, cerrando...")
         self.shutdown_event.set()
         
     def __init_signal_handler(self):
@@ -262,16 +264,16 @@ class AggregatorQuery3:
         
         healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
         start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query3", shutdown_event=self.shutdown_event)
-        print(f"[AggregatorQuery3] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
+        logger.info(f"[AggregatorQuery3] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
         
     def start(self):
         self.__init_healtcheck()
         self.__init_signal_handler()
         self.__init_middleware()
         
-        print("[*] AggregatorQuery3 esperando mensajes...")
-        print("[*] Query 3: TPV por semestre y sucursal 2024-2025 (06:00-23:00)")
-        print("[*] Consumiendo de 2 fuentes: TPV + stores para JOIN")
+        logger.info("[*] AggregatorQuery3 esperando mensajes...")
+        logger.info("[*] Query 3: TPV por semestre y sucursal 2024-2025 (06:00-23:00)")
+        logger.info("[*] Consumiendo de 2 fuentes: TPV + stores para JOIN")
         
         try:
             tpv_thread = threading.Thread(target=self.__consume_tpv, daemon=True)
@@ -280,7 +282,7 @@ class AggregatorQuery3:
             tpv_thread.start()
             stores_thread.start()
             
-            print("[AggregatorQuery3] Worker iniciado, esperando mensajes de múltiples sesiones...")
+            logger.info("[AggregatorQuery3] Worker iniciado, esperando mensajes de múltiples sesiones...")
             
             # Loop principal - solo termina por señal
             while not self.shutdown_event.is_set():
@@ -289,33 +291,42 @@ class AggregatorQuery3:
                 if not tpv_thread.is_alive() and not stores_thread.is_alive():
                     break
                 
-            print("[AggregatorQuery3] Terminando por señal externa")
+            logger.info("[AggregatorQuery3] Terminando por señal externa")
             
         except KeyboardInterrupt:
-            print("\n[AggregatorQuery3] Interrupción recibida")
+            logger.warning("\n[AggregatorQuery3] Interrupción recibida")
         finally:
             self.__close_middleware()
                     
-            print("[x] AggregatorQuery3 detenido")
+            logger.info("[x] AggregatorQuery3 detenido")
 
     def __close_middleware(self):
         for mq in [self.tpv_queue, self.stores_exchange]:
             try:
                 mq.stop_consuming()
             except Exception as e:
-                print(f"Error al parar el consumo: {e}")
+                logger.error(f"Error al parar el consumo: {e}")
             
             # Cerrar conexiones
         for mq in [self.tpv_queue, self.stores_exchange, self.results_exchange]:
             try:
                 mq.close()
             except Exception as e:
-                print(f"Error al cerrar conexión: {e}")
+                logger.error(f"Error al cerrar conexión: {e}")
 
-    
+
+
+def init_log():
+    logging.basicConfig(
+    level=LOG_LEVEL,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
                 
 if __name__ == "__main__":
+    init_log()
+    logger = logging.getLogger(__name__)
+    
     aggregator = AggregatorQuery3()
     aggregator.start()
     
