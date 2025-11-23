@@ -23,7 +23,7 @@ OUTPUT_EXCHANGE = "transactions_query3"  # exchange de salida para query 3
 ROUTING_KEY = "query3"                   # routing para topic
 
 def parse_semester(created_at: str) -> str:
-    """Extrae el año-semestre de created_at. Retorna formato 'YYYY-S1' o 'YYYY-S2'."""
+    """Extrae el año-semestre de created_at. Retorna formato 'YYYY-H1' o 'YYYY-H2'."""
     if not created_at:
         raise ValueError("created_at vacío")
     
@@ -34,18 +34,18 @@ def parse_semester(created_at: str) -> str:
         year_str = created_at[:4]    # Extraer YYYY
         
         # Determinar semestre basado en el mes
-        semester = "S1" if month <= 6 else "S2"
+        semester = "H1" if month <= 6 else "H2"
         return f"{year_str}-{semester}"
         
     except Exception:
         # Fallback: parsing completo
         try:
             dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            semester = "S1" if dt.month <= 6 else "S2"
+            semester = "H1" if dt.month <= 6 else "H2"
             return f"{dt.year}-{semester}"
         except Exception:
             dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-            semester = "S1" if dt.month <= 6 else "S2"
+            semester = "H1" if dt.month <= 6 else "H2"
             return f"{dt.year}-{semester}"
 
 def group_by_semester_and_store(rows):

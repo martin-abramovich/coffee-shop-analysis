@@ -123,10 +123,7 @@ class AggregatorQuery3:
             if not store_name:
                 print(f"[AggregatorQuery3] WARNING: store_id {store_id} no encontrado en stores")
                 continue
-            
-            # Convertir formato de semestre: "2024-S1" -> "2024-H1", "2024-S2" -> "2024-H2"
-            year_half = semester.replace('-S', '-H')
-            
+                        
             final_results.append({
                 'year_half_created_at': semester,
                 'store_name': store_name,
