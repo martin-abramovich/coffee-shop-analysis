@@ -12,10 +12,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
 from common.healthcheck import start_healthcheck_server
 
-def log_with_timestamp(message):
-    """Función para logging con timestamp"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] {message}")
 
 from middleware.middleware import MessageMiddlewareExchange, MessageMiddlewareQueue
 from workers.utils import deserialize_message, serialize_message
@@ -156,18 +152,20 @@ class AggregatorQuery1:
     
     def __del_session(self, session_id):
         #data en memoria
-        if session_id in self.aggregator.session_data:
-            del self.aggregator.session_data[session_id]
+        if session_id in self.session_data:
+            del self.session_data[session_id]
         
         #data en disco
         self.state_manager.delete_session(session_id)
     
     def __save_session(self, session_id):
-        tracker_snap = self.session_tracker.get_single_session_snapshot(session_id)
+        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, "transactions")
         session_snap = self.session_data.get(session_id, {})
-            
-            # Escribimos session_{id}.pkl
-        self.state_manager.save_session(session_id, session_snap, tracker_snap)
+        
+        # Escribimos session_{id}.pkl
+        self.state_manager.save_type_state(session_id, "transactions", session_snap, tracker_snap)
+        
+        
         
     def __on_message(self, body):
         header, rows = deserialize_message(body)
@@ -183,20 +181,24 @@ class AggregatorQuery1:
             self.__accumulate_transactions(rows, session_id)
        
         if self.session_tracker.update(session_id, "transactions",batch_id, is_eos): 
-            
-            self.__send_results(session_id)
-            
-            self.__del_session(session_id)
+                self.__send_results(session_id)
+                
+                self.__del_session(session_id)
+          
         else: 
             # Obtenemos snapshot SOLO de esta sesión
             self.__save_session(session_id)
 
+    def __load_sessions_data(self, data):
+        for session_id, data in data.items():
+            self.session_data[session_id] = data["transactions"]
+    
     def __load_sessions(self):
         logger.info("[*] Intentando recuperar estado previo...")
         saved_data, saved_tracker = self.state_manager.load_all_sessions()
         
-        if saved_data is not None and saved_tracker is not None:
-            self.session_data = saved_data
+        if saved_data and saved_tracker:
+            self.__load_sessions_data(saved_data)
             self.session_tracker.load_state_snapshot(saved_tracker)
             logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
         else:

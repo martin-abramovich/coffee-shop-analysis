@@ -100,20 +100,20 @@ class SessionTracker:
 
         return False
     
-    def get_single_session_snapshot(self, session_id):
-        """Retorna el estado limpio (sin locks) de UNA sesión específica."""
-        if session_id not in self.sessions:
-            return None
+    # def get_single_session_snapshot(self, session_id):
+    #     """Retorna el estado limpio (sin locks) de UNA sesión específica."""
+    #     if session_id not in self.sessions:
+    #         return None
             
-        session_info = self.sessions[session_id]
-        snapshot = {}
+    #     session_info = self.sessions[session_id]
+    #     snapshot = {}
         
-        # Usamos el lock de la sesión para leer consistentemente
-        with session_info["_lock"]:
-            for key, val in session_info.items():
-                if key == "_lock": continue
-                snapshot[key] = val
-        return snapshot
+    #     # Usamos el lock de la sesión para leer consistentemente
+    #     with session_info["_lock"]:
+    #         for key, val in session_info.items():
+    #             if key == "_lock": continue
+    #             snapshot[key] = val
+    #     return snapshot
     
     def load_state_snapshot(self, snapshot):
         """Reconstruye el estado desde un snapshot."""
@@ -122,3 +122,15 @@ class SessionTracker:
             for session_id, data in snapshot.items():
                 self.sessions[session_id] = data
                 self.sessions[session_id]["_lock"] = threading.Lock()
+    
+    def get_single_session_type_snapshot(self, session_id, entity_type):
+        """Retorna el estado del tracker SOLO para un tipo específico."""
+        if session_id not in self.sessions:
+            return {}
+            
+        session_info = self.sessions[session_id]
+        with session_info["_lock"]:
+            if entity_type in session_info:
+                # Retornamos copia del dict de ese tipo (ranges, expected, done)
+                return session_info[entity_type].copy()
+        return {}

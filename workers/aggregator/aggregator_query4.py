@@ -59,7 +59,7 @@ class AggregatorQuery4:
             self.session_data[session_id] = {
                 'store_user_transactions': defaultdict(int),
                 'batches_received': 0,
-                # Diccionarios de JOIN específicos de esta sesión
+                # Diccionarios de JOIN
                 'store_id_to_name': {},  # store_id -> store_name
                 'user_id_to_birthdate': {},  # user_id -> birthdate
             }

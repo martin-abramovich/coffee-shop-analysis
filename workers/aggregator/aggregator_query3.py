@@ -6,6 +6,7 @@ import threading
 import time
 from collections import defaultdict
 
+from workers.aggregator.sesion_state_manager import SessionStateManager
 from workers.session_tracker import SessionTracker
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -32,7 +33,8 @@ class AggregatorQuery3:
         self.session_data = {}
 
         self.shutdown_event = threading.Event()
-        self.sesssion_traker = SessionTracker(tracked_types=["tpv", "stores"])
+        self.session_tracker = SessionTracker(tracked_types=["tpv", "stores"])
+        self.state_manager = SessionStateManager()
         
         #in
         self.tpv_queue = None
@@ -44,10 +46,11 @@ class AggregatorQuery3:
         """Inicializa datos para una nueva sesión"""
         if session_id not in self.session_data:
             self.session_data[session_id] = {
-                'semester_store_tpv': defaultdict(float),
-                'batches_received': 0,
-                # Diccionario de JOIN específico de esta sesión
-                'store_id_to_name': {},
+                'tpv':{
+                    'semester_store_tpv': defaultdict(float),
+                    'batches_received': 0,
+                    },
+                'stores': {},
             }
     
     def __get_session_data(self, session_id):
@@ -58,19 +61,24 @@ class AggregatorQuery3:
     def __load_stores(self, rows, session_id):
         """Carga stores para construir el diccionario store_id -> store_name para una sesión específica."""
         session_data = self.__get_session_data(session_id)
+        stores = session_data['stores']
         
         for row in rows:
             store_id = row.get('store_id')
             store_name = row.get('store_name')
             
             if store_id and store_name:
-                session_data['store_id_to_name'][store_id] = store_name.strip()
+                stores[store_id] = store_name.strip()
         
-        logger.info(f"[AggregatorQuery3] Sesión {session_id}: Cargadas {len(session_data['store_id_to_name'])} stores para JOIN")
+        logger.info(f"[AggregatorQuery3] Sesión {session_id}: Cargadas {len(stores)} stores para JOIN")
     
     def __accumulate_tpv(self, rows, session_id):
         """Acumula TPV parciales de group_by_query3 para una sesión específica."""
         session_data = self.__get_session_data(session_id)
+        semester_store_tpv = session_data["tpv"]['semester_store_tpv']
+        
+        session_data["tpv"]['batches_received'] += 1
+        batches_received = session_data["tpv"]['batches_received']
         
         for row in rows:
             semester = row.get('semester')
@@ -92,35 +100,38 @@ class AggregatorQuery3:
             key = (semester, store_id)
             
             # Acumular TPV para esta sesión
-            session_data['semester_store_tpv'][key] += total_payment_value
+            semester_store_tpv[key] +=  total_payment_value
+            
         
-        session_data['batches_received'] += 1
-        
-        if session_data['batches_received'] % 10000 == 0 or session_data['batches_received'] == 1:
-            logger.info(f"[AggregatorQuery3] Sesión {session_id}: Procesado batch {session_data['batches_received']} con {len(rows)} registros. Total combinaciones: {len(session_data['semester_store_tpv'])}")
+        if batches_received % 10000 == 0 or batches_received == 1:
+            logger.info(f"[AggregatorQuery3] Sesión {session_id}: Procesado batch {batches_received} con {len(rows)} registros. Total combinaciones: {len(semester_store_tpv)}")
     
+            
     def __generate_final_results(self, session_id):
         """Genera los resultados finales para Query 3 con JOIN para una sesión específica."""
         session_data = self.__get_session_data(session_id)
         
-        logger.info(f"[AggregatorQuery3] Generando resultados finales para sesión {session_id}...")
-        logger.info(f"[AggregatorQuery3] Total combinaciones procesadas: {len(session_data['semester_store_tpv'])}")
-        logger.info(f"[AggregatorQuery3] Stores disponibles para JOIN: {len(session_data['store_id_to_name'])}")
+        semester_store_tpv = session_data['tpv']['semester_store_tpv']
+        stores = session_data['stores']
         
-        if not session_data['semester_store_tpv']:
+        logger.info(f"[AggregatorQuery3] Generando resultados finales para sesión {session_id}...")
+        logger.info(f"[AggregatorQuery3] Total combinaciones procesadas: {len(semester_store_tpv)}")
+        logger.info(f"[AggregatorQuery3] Stores disponibles para JOIN: {len(stores)}")
+        
+        if not semester_store_tpv:
             logger.warning(f"[AggregatorQuery3] No hay datos para procesar en sesión {session_id}")
             return []
         
-        if not session_data['store_id_to_name']:
+        if not stores:
             logger.warning(f"[AggregatorQuery3] WARNING: No hay stores cargadas para sesión {session_id}. No se puede hacer JOIN.")
             return []
         
         final_results = []
         
         # Procesar cada combinación (semestre, store_id) con JOIN
-        for (semester, store_id), total_tpv in session_data['semester_store_tpv'].items():
+        for (semester, store_id), total_tpv in semester_store_tpv.items():
             # JOIN: buscar store_name para el store_id de esta sesión
-            store_name = session_data['store_id_to_name'].get(store_id)
+            store_name = stores.get(store_id)
             
             if not store_name:
                 logger.warning(f"[AggregatorQuery3] WARNING: store_id {store_id} no encontrado en stores")
@@ -145,7 +156,7 @@ class AggregatorQuery3:
         logger.info(f"[AggregatorQuery3] Ambos flujos completados para sesión {session_id}. Generando resultados finales...")
 
         # Generar resultados finales para esta sesión
-        final_results = aggregator.__generate_final_results(session_id)
+        final_results = self.__generate_final_results(session_id)
 
         if final_results:
             # Enviar resultados finales con headers completos
@@ -177,14 +188,25 @@ class AggregatorQuery3:
 
         logger.info(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
     
+    def __del_session(self, session_id):
+        #data en memoria
+        if session_id in self.session_data:
+            del self.session_data[session_id]
+        
+        #data en disco
+        self.state_manager.delete_session(session_id)
+        
+    def __save_session_type(self, session_id, type: str):
+            tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
+            session_snap = self.__get_session_data(session_id)[type]
+                        
+            self.state_manager.save_type_state(session_id, type, session_snap, tracker_snap)
+        
+            
     def __on_tpv_message(self, body):
         """Maneja mensajes de TPV de group_by_query3."""
-        try:
-            header, rows = deserialize_message(body)
-        except Exception as e:
-            logger.error(f"[AggregatorQuery3] Error deserializando mensaje: {e}")
-            return
-            
+        header, rows = deserialize_message(body)
+
         session_id = header.get("session_id", "unknown")
         bach_id = int(header.get("batch_id"))
         is_eos = header.get("is_eos") == "true"
@@ -193,12 +215,14 @@ class AggregatorQuery3:
             logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en TPV para sesión {session_id}, batch_id {bach_id}")
             
         if rows:
-            aggregator.__accumulate_tpv(rows, session_id)
+            self.__accumulate_tpv(rows, session_id)
             
-        if self.sesssion_traker.update(session_id, "stores", bach_id, is_eos):
+        if self.session_tracker.update(session_id, "tpv", bach_id, is_eos):
             self.__generate_and_send_results(session_id)
-            del aggregator.session_data[session_id]
+            self.__del_session(session_id)
             
+        else: 
+            self.__save_session_type(session_id, "tpv")
 
     def __on_stores_message(self, body):
         """Maneja mensajes de stores para el JOIN."""
@@ -209,23 +233,24 @@ class AggregatorQuery3:
             return
         
         session_id = header.get("session_id", "unknown")
+        is_eos = header.get("is_eos") == "true"
         bach_id = int(header.get("batch_id", -1))
         if bach_id == -1:
-            logger.info(f"[AggregatorQuery3] WARNING: batch_id inválido en sesión {session_id}")
+            logger.warning(f"[AggregatorQuery3] WARNING: batch_id inválido en sesión {session_id}")
             return
 
-        is_eos = header.get("is_eos") == "true"
-        
         if is_eos:
             logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en Stores para sesión {session_id}, batch_id {bach_id}")
         
         if rows:
-            aggregator.__load_stores(rows, session_id)
+            self.__load_stores(rows, session_id)
             
-        if self.sesssion_traker.update(session_id, "tpv", bach_id, is_eos):
+        if self.session_tracker.update(session_id, "stores", bach_id, is_eos):
             self.__generate_and_send_results(session_id)
-            del aggregator.session_data[session_id]
-            
+            del self.session_data[session_id]
+        else: 
+            self.__save_session_type(session_id, "stores")
+        
     
     def __consume_tpv(self):
         try:
@@ -259,17 +284,48 @@ class AggregatorQuery3:
         signal.signal(signal.SIGTERM, self.__signal_handler)
         signal.signal(signal.SIGINT, self.__signal_handler)
 
-    def __init_healtcheck(self):
+    def __init_healthcheck(self):
         "Iniciar servidor de healthcheck UDP"
         
         healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
         start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query3", shutdown_event=self.shutdown_event)
         logger.info(f"[AggregatorQuery3] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
-        
+    
+    def __load_sessions_data(self, data: dict): 
+        for session_id, types_data in data.items():
+            self.__initialize_session(session_id)
+            
+            if 'stores' in types_data:
+                self.session_data[session_id]['stores'] = types_data['stores']
+                        
+            if 'tpv' in types_data:
+                loaded_tpv = types_data['tpv']
+                
+                raw_dict = loaded_tpv.get('semester_store_tpv', {})
+                if not isinstance(raw_dict, defaultdict):
+                    loaded_tpv['semester_store_tpv'] = defaultdict(float, raw_dict)
+                
+                self.session_data[session_id]['tpv'] = loaded_tpv  
+                    
+    def __load_sessions(self):
+        logger.info("[*] Intentando recuperar estado previo...")
+        saved_data, saved_tracker = self.state_manager.load_all_sessions()
+
+
+        if saved_data and saved_tracker:
+            self.__load_sessions_data(saved_data)
+            self.session_tracker.load_state_snapshot(saved_tracker)
+            
+            logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
+        else:
+            logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
+            
     def start(self):
-        self.__init_healtcheck()
+        self.__init_healthcheck()
         self.__init_signal_handler()
         self.__init_middleware()
+        
+        self.__load_sessions()
         
         logger.info("[*] AggregatorQuery3 esperando mensajes...")
         logger.info("[*] Query 3: TPV por semestre y sucursal 2024-2025 (06:00-23:00)")

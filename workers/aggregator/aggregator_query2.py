@@ -167,15 +167,7 @@ class AggregatorQuery2:
         
         print(f"[AggregatorQuery2] Resultados generados para {len(results_by_month)} meses")
         print(f"[AggregatorQuery2] Total registros de resultados: {len(final_results)}")
-        
-        # Mostrar ejemplos
-        # Solo mostrar ejemplos si hay pocos resultados
-        if len(final_results) <= 10:
-            print(f"[AggregatorQuery2] Ejemplos de resultados:")
-            for i, result in enumerate(final_results[:3]):
-                if 'sellings_qty' in result:
-                    print(f"  {i+1}. {result['year_month_created_at']} - {result['item_name']}: {result['sellings_qty']} unidades")
-            
+     
         return final_results
     
     def generate_detailed_results(self):
