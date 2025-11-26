@@ -271,6 +271,8 @@ class AggregatorQuery4:
             batch_size = 1000  # Batches más pequeños para TOP 3
             total_batches = (len(final_results) + batch_size - 1) // batch_size
             
+            results_exchange = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            
             for i in range(0, len(final_results), batch_size):
                 batch = final_results[i:i + batch_size]
                 batch_header = results_header.copy()
@@ -278,8 +280,10 @@ class AggregatorQuery4:
                 batch_header["total_batches"] = str(total_batches)
                 
                 result_msg = serialize_message(batch, batch_header)
-                self.results_exchange.send(result_msg)
-                
+                results_exchange.send(result_msg)
+            
+            results_exchange.close()
+             
         logger.info(f"[AggregatorQuery4] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
         
         if session_id in self.session_data:
@@ -338,24 +342,33 @@ class AggregatorQuery4:
             
     def __consume_transactions(self):
         try:
+            self.transactions_queue = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q4")
             self.transactions_queue.start_consuming(self.__on_transactions_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
                 logger.error(f"[AggregatorQuery4] Error en consumo de transacciones: {e}")
+            else: 
+                self.transactions_queue.close()
 
     def __consume_stores(self):
         try:
+            self.stores_exchange = MessageMiddlewareExchange(RABBIT_HOST, STORES_EXCHANGE, [STORES_ROUTING_KEY])
             self.stores_exchange.start_consuming(self.__on_stores_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
                 logger.error(f"[AggregatorQuery4] Error en consumo de stores: {e}")
+            else:
+                self.stores_exchange.close()
             
     def __consume_users(self):
         try:
+            self.users_queue = MessageMiddlewareQueue(RABBIT_HOST, USERS_QUEUE)
             self.users_queue.start_consuming(self.__on_users_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
                 logger.error(f"[AggregatorQuery4] Error en consumo de users: {e}")
+            else: 
+                self.users_queue.close()
 
     def __init_healthcheck(self):
         "Iniciar servidor de healthcheck UDP"
@@ -368,49 +381,35 @@ class AggregatorQuery4:
     def __signal_handler(self,signum, frame):
         logger.warning(f"[AggregatorQuery4] Señal {signum} recibida, cerrando...")
         self.shutdown_event.set()
+        
+        for mq in [self.users_queue, self.stores_exchange, self.transactions_queue]:
+            try:
+                mq.stop_consuming()
+            except Exception as e: 
+                logger.error(f"Error al parar el consumo: {e}")
     
     def __init_signal_handler(self):
         signal.signal(signal.SIGTERM, self.__signal_handler)
         signal.signal(signal.SIGINT, self.__signal_handler)
     
-    def __init_middleware(self):
-        # Entrada 1: conteos de transacciones del group_by_query4
-        self.transactions_queue = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q4")
-        
-        # Entrada 2: stores para JOIN
-        self.stores_exchange = MessageMiddlewareExchange(RABBIT_HOST, STORES_EXCHANGE, [STORES_ROUTING_KEY])
-        
-        # Entrada 3: users para JOIN
-        self.users_queue = MessageMiddlewareQueue(RABBIT_HOST, USERS_QUEUE)
-        
-        # Salida: exchange para resultados finales
-        self.results_exchange = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
 
     def start(self):
     
         self.__init_healthcheck()
         self.__init_signal_handler()        
-        self.__init_middleware()
         
         logger.info("[*] AggregatorQuery4 esperando mensajes...")
         logger.info("[*] Query 4: TOP 3 clientes por sucursal (más compras 2024-2025)")
         logger.info("[*] Consumiendo de 3 fuentes: transacciones + stores + users para doble JOIN")
          
-        try:
-            self.__run()
-                
-        except KeyboardInterrupt:
-            logger.warning("[AggregatorQuery4] Terminando por señal externa")          
-            self.shutdown_event.set()
-            
-        finally:
-            self.__close_middleware()
-            logger.info("[x] AggregatorQuery4 detenido")
+        self.__run()
+        
+        logger.info("[x] AggregatorQuery4 detenido")
 
     def __run(self):
-        transactions_thread = threading.Thread(target=self.__consume_transactions, daemon=True)
-        stores_thread = threading.Thread(target=self.__consume_stores, daemon=True)
-        users_thread = threading.Thread(target=self.__consume_users, daemon=True)
+        transactions_thread = threading.Thread(target=self.__consume_transactions)
+        stores_thread = threading.Thread(target=self.__consume_stores)
+        users_thread = threading.Thread(target=self.__consume_users)
             
         transactions_thread.start()
         stores_thread.start()
@@ -419,24 +418,10 @@ class AggregatorQuery4:
         logger.info("[AggregatorQuery4] Worker iniciado, esperando mensajes de múltiples sesiones...")
         logger.info("[AggregatorQuery4] El worker continuará procesando múltiples clientes")
             
-        # Loop principal - solo termina por señal
-        while not self.shutdown_event.is_set():
-            transactions_thread.join(timeout=1)
-            stores_thread.join(timeout=1)
-            users_thread.join(timeout=1)
-                
-            if not transactions_thread.is_alive() and not stores_thread.is_alive() and not users_thread.is_alive():
-                break
-
-    def __close_middleware(self):        
-        for mq in [self.transactions_queue, self.stores_exchange, self.users_queue, self.results_exchange]:
-            try:
-                mq.close()
-            except Exception as e:
-                pass 
-
-
-
+        transactions_thread.join()
+        stores_thread.join()
+        users_thread.join()
+        
 if __name__ == "__main__":    
     logger = init_log("AggregatorQuery4")
     

@@ -98,9 +98,17 @@ class MessageMiddlewareExchange(MessageMiddleware):
 			raise MessageMiddlewareMessageError(f"Error inesperado: {e}")
 
 
+
 	def stop_consuming(self):
 		try:
-			self.channel.stop_consuming()
+			if self.channel and self.channel.is_open:
+				self.connection.add_callback_threadsafe(self.channel.stop_consuming)
+		except pika.exceptions.ChannelClosedByBroker:
+			pass
+		except pika.exceptions.StreamLostError:
+			pass
+		except pika.exceptions.ConnectionClosed:
+			pass
 		except pika.exceptions.AMQPConnectionError:
 			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
 
@@ -119,7 +127,13 @@ class MessageMiddlewareExchange(MessageMiddleware):
 
 	def close(self):
 		try:
-			self.connection.close()
+			if self.channel and self.channel.is_open:
+				self.channel.close()
+
+			if self.connection and self.connection.is_open:
+				self.connection.close()
+				
+ 
 		except Exception as e:
 			raise MessageMiddlewareCloseError(f"Error cerrando la conexión: {e}")
 
@@ -173,7 +187,14 @@ class MessageMiddlewareQueue(MessageMiddleware):
 
 	def stop_consuming(self):
 		try:
-			self.channel.stop_consuming()
+			if self.channel and self.channel.is_open:
+				self.connection.add_callback_threadsafe(self.channel.stop_consuming)
+		except pika.exceptions.ChannelClosedByBroker:
+			pass
+		except pika.exceptions.StreamLostError:
+			pass
+		except pika.exceptions.ConnectionClosed:
+			pass
 		except pika.exceptions.AMQPConnectionError:
 			raise MessageMiddlewareDisconnectedError("Se perdió la conexión con el middleware.")
 
@@ -198,7 +219,12 @@ class MessageMiddlewareQueue(MessageMiddleware):
 
 	def close(self):
 		try:
-			self.connection.close()
+			if self.channel and self.channel.is_open:
+				self.channel.close()
+
+			if self.connection and self.connection.is_open:
+				self.connection.close()
+				
 		except Exception as e:
 			raise MessageMiddlewareCloseError(f"Error cerrando la conexión: {e}")
 

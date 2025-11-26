@@ -185,7 +185,6 @@ class AggregatorQuery1:
                 self.__del_session(session_id)
           
         else: 
-            # Obtenemos snapshot SOLO de esta sesión
             self.__save_session(session_id)
 
     def __load_sessions_data(self, data):

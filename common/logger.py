@@ -10,6 +10,6 @@ def init_log(log_name: str = __name__):
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    logging.getLogger("pika").setLevel(logging.CRITICAL)
+    logging.getLogger("pika").setLevel(logging.ERROR)
     
     return logging.getLogger(log_name)

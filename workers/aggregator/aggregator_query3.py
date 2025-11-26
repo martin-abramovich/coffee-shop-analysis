@@ -177,6 +177,8 @@ class AggregatorQuery3:
             batch_size = 1000
             total_batches = (len(final_results) + batch_size - 1) // batch_size
             
+            results_exchange = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            
             for i in range(0, len(final_results), batch_size):
                 batch = final_results[i:i + batch_size]
                 batch_header = results_header.copy()
@@ -184,8 +186,10 @@ class AggregatorQuery3:
                 batch_header["total_batches"] = str(total_batches)
                 
                 result_msg = serialize_message(batch, batch_header)
-                self.results_exchange.send(result_msg)
+                results_exchange.send(result_msg)
 
+            results_exchange.close()
+            
         logger.info(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
     
     def __del_session(self, session_id):
@@ -251,32 +255,37 @@ class AggregatorQuery3:
     
     def __consume_tpv(self):
         try:
+            self.tpv_queue = MessageMiddlewareQueue(RABBIT_HOST, INPUT_QUEUE)
             self.tpv_queue.start_consuming(self.__on_tpv_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
                 logger.error(f"[AggregatorQuery3] Error en consumo de TPV: {e}")
-        
+            else: 
+                self.tpv_queue.close()
+                
+                                 
     def __consume_stores(self):
         try:
+            self.stores_exchange = MessageMiddlewareExchange(RABBIT_HOST, STORES_EXCHANGE, [STORES_ROUTING_KEY])
             self.stores_exchange.start_consuming(self.__on_stores_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
                 logger.error(f"[AggregatorQuery3] Error en consumo de stores: {e}")
-            
-    def __init_middleware(self):
-        # Entrada 1: TPV del group_by_query
-        self.tpv_queue = MessageMiddlewareQueue(RABBIT_HOST, INPUT_QUEUE)
-        
-        # Entrada 2: stores para JOIN
-        self.stores_exchange = MessageMiddlewareExchange(RABBIT_HOST, STORES_EXCHANGE, [STORES_ROUTING_KEY])
-        
-        # Salida: exchange para resultados finales
-        self.results_exchange = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            else: 
+                self.stores_exchange.close()
+    
 
     def __signal_handler(self, signum, frame):
         logger.info(f"[AggregatorQuery3] Señal {signum} recibida, cerrando...")
         self.shutdown_event.set()
         
+        for mq in [self.stores_exchange, self.tpv_queue]:
+            try:
+                mq.stop_consuming()
+            except Exception as e: 
+                logger.error(f"Error al parar el consumo: {e}")
+
+
     def __init_signal_handler(self):
         signal.signal(signal.SIGTERM, self.__signal_handler)
         signal.signal(signal.SIGINT, self.__signal_handler)
@@ -319,7 +328,6 @@ class AggregatorQuery3:
     def start(self):
         self.__init_healthcheck()
         self.__init_signal_handler()
-        self.__init_middleware()
         
         self.__load_sessions()
         
@@ -328,41 +336,24 @@ class AggregatorQuery3:
         logger.info("[*] Consumiendo de 2 fuentes: TPV + stores para JOIN")
         
         try:
-            tpv_thread = threading.Thread(target=self.__consume_tpv, daemon=True)
-            stores_thread = threading.Thread(target=self.__consume_stores, daemon=True)
+            tpv_thread = threading.Thread(target=self.__consume_tpv)
+            stores_thread = threading.Thread(target=self.__consume_stores)
             
             tpv_thread.start()
             stores_thread.start()
             
             logger.info("[AggregatorQuery3] Worker iniciado, esperando mensajes de múltiples sesiones...")
             
-            # Loop principal - solo termina por señal
-            while not self.shutdown_event.is_set():
-                tpv_thread.join(timeout=1)
-                stores_thread.join(timeout=1)
-                if not tpv_thread.is_alive() and not stores_thread.is_alive():
-                    break
+            tpv_thread.join()
+            stores_thread.join()
                 
             logger.info("[AggregatorQuery3] Terminando por señal externa")
             
         except KeyboardInterrupt:
             logger.warning("\n[AggregatorQuery3] Interrupción recibida")
-        finally:
-            self.__close_middleware()
-            
-            if tpv_thread and tpv_thread.is_alive():
-                tpv_thread.join()
-            if stores_thread and stores_thread.is_alive():
-                stores_thread.join()
-                
+        finally:   
             logger.info("[x] AggregatorQuery3 detenido")
 
-    def __close_middleware(self):
-        for mq in [self.tpv_queue, self.stores_exchange, self.results_exchange]:
-            try:
-                mq.close()
-            except Exception as e:
-                pass 
 
 
                 
