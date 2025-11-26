@@ -5,6 +5,7 @@ import signal
 import threading
 from datetime import datetime
 
+from common.logger import init_log
 from workers.session_tracker import SessionTracker
 from workers.aggregator.sesion_state_manager import SessionStateManager
 # Añadir paths al PYTHONPATH
@@ -18,7 +19,6 @@ from workers.utils import deserialize_message, serialize_message
 
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
 INPUT_EXCHANGE = "transactions_amount"    # exchange del filtro por amount
 INPUT_ROUTING_KEY = "amount"              # routing key del filtro por amount
@@ -162,7 +162,6 @@ class AggregatorQuery1:
         tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, "transactions")
         session_snap = self.session_data.get(session_id, {})
         
-        # Escribimos session_{id}.pkl
         self.state_manager.save_type_state(session_id, "transactions", session_snap, tracker_snap)
         
         
@@ -236,15 +235,8 @@ class AggregatorQuery1:
                 logger.error(f"Error al cerrar conexión: {e}")
 
 
-def init_log():
-    logging.basicConfig(
-    level=LOG_LEVEL,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
 if __name__ == "__main__":
-    init_log()
-    logger = logging.getLogger(__name__)
+    logger = init_log("AggregatorQuery1")
     
     aggregator = AggregatorQuery1()
     aggregator.start()

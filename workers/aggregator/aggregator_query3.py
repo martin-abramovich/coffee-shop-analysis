@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 
 from workers.aggregator.sesion_state_manager import SessionStateManager
+from common.logger import init_log
 from workers.session_tracker import SessionTracker
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -16,7 +17,6 @@ from workers.utils import deserialize_message, serialize_message
 from common.healthcheck import start_healthcheck_server
 
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
 INPUT_QUEUE = "group_by_q3"    
 
@@ -197,10 +197,10 @@ class AggregatorQuery3:
         self.state_manager.delete_session(session_id)
         
     def __save_session_type(self, session_id, type: str):
-            tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
-            session_snap = self.__get_session_data(session_id)[type]
-                        
-            self.state_manager.save_type_state(session_id, type, session_snap, tracker_snap)
+        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
+        session_snap = self.__get_session_data(session_id)[type]
+                    
+        self.state_manager.save_type_state(session_id, type, session_snap, tracker_snap)
         
             
     def __on_tpv_message(self, body):
@@ -235,9 +235,6 @@ class AggregatorQuery3:
         session_id = header.get("session_id", "unknown")
         is_eos = header.get("is_eos") == "true"
         bach_id = int(header.get("batch_id", -1))
-        if bach_id == -1:
-            logger.warning(f"[AggregatorQuery3] WARNING: batch_id inválido en sesión {session_id}")
-            return
 
         if is_eos:
             logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en Stores para sesión {session_id}, batch_id {bach_id}")
@@ -311,7 +308,6 @@ class AggregatorQuery3:
         logger.info("[*] Intentando recuperar estado previo...")
         saved_data, saved_tracker = self.state_manager.load_all_sessions()
 
-
         if saved_data and saved_tracker:
             self.__load_sessions_data(saved_data)
             self.session_tracker.load_state_snapshot(saved_tracker)
@@ -353,35 +349,25 @@ class AggregatorQuery3:
             logger.warning("\n[AggregatorQuery3] Interrupción recibida")
         finally:
             self.__close_middleware()
-                    
+            
+            if tpv_thread and tpv_thread.is_alive():
+                tpv_thread.join()
+            if stores_thread and stores_thread.is_alive():
+                stores_thread.join()
+                
             logger.info("[x] AggregatorQuery3 detenido")
 
     def __close_middleware(self):
-        for mq in [self.tpv_queue, self.stores_exchange]:
-            try:
-                mq.stop_consuming()
-            except Exception as e:
-                logger.error(f"Error al parar el consumo: {e}")
-            
-            # Cerrar conexiones
         for mq in [self.tpv_queue, self.stores_exchange, self.results_exchange]:
             try:
                 mq.close()
             except Exception as e:
-                logger.error(f"Error al cerrar conexión: {e}")
+                pass 
 
-
-
-def init_log():
-    logging.basicConfig(
-    level=LOG_LEVEL,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 
                 
 if __name__ == "__main__":
-    init_log()
-    logger = logging.getLogger(__name__)
+    logger = init_log("AggregatorQuery3")
     
     aggregator = AggregatorQuery3()
     aggregator.start()

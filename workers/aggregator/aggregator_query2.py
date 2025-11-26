@@ -5,6 +5,7 @@ import threading
 import time
 from collections import defaultdict
 
+from common.logger import init_log
 from workers.session_tracker import SessionTracker
 
 # Añadir paths al PYTHONPATH
@@ -307,7 +308,7 @@ def consume_menu_items():
 
 if __name__ == "__main__":
     shutdown_event = threading.Event()
-    
+    logger = init_log("AgregatorQuery2")
     # Iniciar servidor de healthcheck UDP
     healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
     start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query2", shutdown_event=shutdown_event)

@@ -10,16 +10,13 @@ import json
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
+from common.logger import init_log
 from gateway.server import handle_client, active_sessions, sessions_lock
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from gateway.results_handler import start_results_handler
 from common.healthcheck import start_healthcheck_server
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = init_log("Gateway")
 
 LISTEN_HOST = "0.0.0.0"  # Para escuchar conexiones TCP
 PORT = 9000  # Puerto para recibir del cliente
