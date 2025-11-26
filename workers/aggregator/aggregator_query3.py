@@ -248,7 +248,7 @@ class AggregatorQuery3:
             
         if self.session_tracker.update(session_id, "stores", bach_id, is_eos):
             self.__generate_and_send_results(session_id)
-            del self.session_data[session_id]
+            self.__del_session(session_id)
         else: 
             self.__save_session_type(session_id, "stores")
         

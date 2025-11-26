@@ -396,6 +396,8 @@ services:
         condition: service_healthy
     networks:
       - coffee-network
+    volumes:
+      - ./state/agregator4:/app/state
 
   # ==================== MONITORS (Redundantes) ====================
   # 3 réplicas de monitores con algoritmo Bully para elección de líder

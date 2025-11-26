@@ -193,7 +193,7 @@ def parse_item(data, offset, entity_type):
         _gender, offset = read_string(data, offset)
         birthdate_iso, offset = read_date_as_iso(data, offset)
         _registered_at_iso, offset = read_datetime_as_iso(data, offset)
-        item['user_id'] = user_id
+        item['user_id'] = int(user_id)
         item['birthdate'] = birthdate_iso
         
     elif entity_type == "stores":

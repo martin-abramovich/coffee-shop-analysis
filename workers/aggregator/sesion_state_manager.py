@@ -130,29 +130,3 @@ class SessionStateManager:
                         logger.error(f"Archivo corrupto {filepath}: {e}")
         
         return aggregator_map, tracker_map
-
-    # def load_all_sessions(self):
-    #     """
-    #     Se ejecuta SOLO al inicio. Carga todos los archivos .pkl en memoria.
-    #     Retorna: (dict_global_aggregator, dict_global_tracker)
-    #     """
-    #     aggregator_map = {}
-    #     tracker_map = {}
-        
-    #     # Buscar todos los .pkl en la carpeta
-    #     files = glob.glob(os.path.join(self.base_dir, "*.pkl"))
-    #     logger.info(f"Recuperando {len(files)} sesiones del disco...")
-
-    #     for filepath in files:
-    #         try:
-    #             with open(filepath, 'rb') as f:
-    #                 state = pickle.load(f)
-                    
-    #             s_id = state['session_id']
-    #             aggregator_map[s_id] = state['aggregator_data']
-    #             tracker_map[s_id] = state['tracker_data']
-                
-    #         except Exception as e:
-    #             logger.error(f"Archivo corrupto ignorado {filepath}: {e}")
-        
-    #     return aggregator_map, tracker_map

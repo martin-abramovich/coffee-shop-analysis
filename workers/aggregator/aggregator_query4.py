@@ -9,6 +9,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from common.logger import init_log
+from workers.aggregator.sesion_state_manager import SessionStateManager
 from workers.session_tracker import SessionTracker
 
 # Añadir paths al PYTHONPATH
@@ -53,14 +54,13 @@ class AggregatorQuery4:
         
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(["transactions", "stores", "users"])
+        self.state_manager = SessionStateManager()
         
         #in 
         self.transactions_queue = None
         self.stores_exchange = None
         self.users_queue = None        
 
-        #out
-        self.results_exchange = None
     
     def __initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
@@ -244,6 +244,7 @@ class AggregatorQuery4:
             
         return final_results
     
+   
     def __generate_and_send_results(self, session_id):
         """Genera y envía los resultados finales cuando todos los flujos terminaron para una sesión específica."""
             
@@ -286,9 +287,21 @@ class AggregatorQuery4:
              
         logger.info(f"[AggregatorQuery4] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
         
+        
+    def __del_session(self, session_id):
+        #data en memoria
         if session_id in self.session_data:
             del self.session_data[session_id]
-            
+        
+        #data en disco
+        self.state_manager.delete_session(session_id)
+          
+    def __save_session_type(self, session_id, type: str):
+        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
+        session_snap = self.__get_session_data(session_id)[type]
+                    
+        self.state_manager.save_type_state(session_id, type, session_snap, tracker_snap)
+   
     def __on_transactions_message(self, body):
         """Maneja mensajes de conteos de transacciones de group_by_query4."""        
         
@@ -305,6 +318,10 @@ class AggregatorQuery4:
         
         if self.session_tracker.update(session_id, "transactions", batch_id, is_eos):
             self.__generate_and_send_results(session_id)
+            
+            self.__del_session(session_id)
+        else:
+            self.__save_session_type(session_id, "transactions")
 
     def __on_stores_message(self, body):
         """Maneja mensajes de stores para el JOIN."""
@@ -322,23 +339,35 @@ class AggregatorQuery4:
         
         if self.session_tracker.update(session_id, "stores", batch_id, is_eos):
             self.__generate_and_send_results(session_id)
+            
+            self.__del_session(session_id)
+        else:
+            self.__save_session_type(session_id, "stores")
     
     def __on_users_message(self, body):
-        """Maneja mensajes de users para el JOIN."""
-        
-        header, rows = deserialize_message(body)       
-        session_id = header.get("session_id", "unknown")
-        batch_id = int(header.get("batch_id"))
-        is_eos = header.get("is_eos") == "true"
-        
-        if is_eos:
-            logger.info(f"Se recibió EOS en users para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
-        
-        if rows:
-            self.__load_users(rows, session_id)
-        
-        if self.session_tracker.update(session_id, "users", batch_id, is_eos):
-            self.__generate_and_send_results(session_id)
+        try:
+            """Maneja mensajes de users para el JOIN."""
+            
+            header, rows = deserialize_message(body)       
+            session_id = header.get("session_id", "unknown")
+            batch_id = int(header.get("batch_id"))
+            is_eos = header.get("is_eos") == "true"
+            
+            if is_eos: logger.info(f"Se recibió EOS en users para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
+
+            if rows:
+                self.__load_users(rows, session_id)
+            
+            if self.session_tracker.update(session_id, "users", batch_id, is_eos):
+                self.__generate_and_send_results(session_id)
+                
+                self.__del_session(session_id)
+                
+            else:
+                pass 
+                #self.__save_session_type(session_id, "users")
+        except Exception as e: 
+            logger.error(f"[AggregatorQuery4] Error procesando el mensaje de users: {e}")
             
     def __consume_transactions(self):
         try:
@@ -392,11 +421,40 @@ class AggregatorQuery4:
         signal.signal(signal.SIGTERM, self.__signal_handler)
         signal.signal(signal.SIGINT, self.__signal_handler)
     
+    def __load_sessions_data(self, data: dict): 
+        for session_id, types_data in data.items():
+            self.__initialize_session(session_id)
+            
+            if 'stores' in types_data:
+                self.session_data[session_id]['stores'] = types_data['stores']
+                        
+            if 'transactions' in types_data:
+                self.session_data[session_id]['transactions'] = types_data['transactions'] 
+            
+            if 'users' in types_data:
+                self.session_data[session_id]['users'] = types_data['users'] 
+            
+     
+     
+    def __load_sessions(self):
+        logger.info("[*] Intentando recuperar estado previo...")
+        saved_data, saved_tracker = self.state_manager.load_all_sessions()
 
+        if saved_data and saved_tracker:
+            self.__load_sessions_data(saved_data)
+            self.session_tracker.load_state_snapshot(saved_tracker)
+            
+            logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
+        else:
+            logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
+    
+    
     def start(self):
     
         self.__init_healthcheck()
         self.__init_signal_handler()        
+        
+        self.__load_sessions()
         
         logger.info("[*] AggregatorQuery4 esperando mensajes...")
         logger.info("[*] Query 4: TOP 3 clientes por sucursal (más compras 2024-2025)")
