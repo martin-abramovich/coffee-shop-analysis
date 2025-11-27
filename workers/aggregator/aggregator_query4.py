@@ -92,7 +92,7 @@ class AggregatorQuery4:
                 normalized_store_id = canonicalize_id(store_id)
                 normalized_store_name = store_name.strip()
                 if normalized_store_id:
-                    session_data['stores'][normalized_store_id] = normalized_store_name
+                    session_data['stores'][int(normalized_store_id)] = normalized_store_name
         
         logger.info(f"[AggregatorQuery4] Sesión {session_id}: Stores cargadas para JOIN: {len(session_data['stores'])}")
     
@@ -119,7 +119,7 @@ class AggregatorQuery4:
             if not is_valid_format:
                 continue
             if normalized_user_id:
-                session_data['users'][normalized_user_id] = normalized_birthdate
+                session_data['users'][int(normalized_user_id)] = normalized_birthdate
         
     
     def __accumulate_transactions(self, rows, session_id):
@@ -153,7 +153,7 @@ class AggregatorQuery4:
             normalized_user_id = canonicalize_id(user_id)
             if not normalized_store_id or not normalized_user_id:
                 continue
-            key = (normalized_store_id, normalized_user_id)
+            key = (int(normalized_store_id), int(normalized_user_id))
             
             
             # Acumular conteo de transacciones para esta sesión
@@ -320,7 +320,7 @@ class AggregatorQuery4:
             self.__generate_and_send_results(session_id)
             
             self.__del_session(session_id)
-        else:
+        else: 
             self.__save_session_type(session_id, "transactions")
 
     def __on_stores_message(self, body):
