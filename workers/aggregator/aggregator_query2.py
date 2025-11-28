@@ -28,6 +28,11 @@ MENU_ITEMS_EXCHANGE = "menu_items_raw"
 MENU_ITEMS_ROUTING_KEY = "menu_items"
 MENU_ITEMS_QUEUE = "menu_items_raw"
 
+INDEX_METRICS = {
+    "total_quantity": 0 ,
+    "total_subtotal": 1,   
+}
+
 class AggregatorQuery2:
     def __init__(self):
         # Datos por sesión: {session_id: session_data}
@@ -40,16 +45,12 @@ class AggregatorQuery2:
         self.mq_metrics = None         
         self.mq_menu_items = None 
         
-        self.mq_out = None
     
     def initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
         if session_id not in self.session_data:
             self.session_data[session_id] = {
-                'month_item_metrics': defaultdict(lambda: {
-                    'total_quantity': 0,
-                    'total_subtotal': 0.0
-                }),
+                'metrics': defaultdict(lambda:[0,0.0]),
                 'batches_received': 0,
                 # Diccionario de JOIN específico de esta sesión
                 'item_id_to_name': {},
@@ -90,7 +91,7 @@ class AggregatorQuery2:
             # Convertir a tipos correctos
             try:
                 if isinstance(total_quantity, str):
-                    total_quantity = int(float(total_quantity))
+                    total_quantity = int(total_quantity)
                 if isinstance(total_subtotal, str):
                     total_subtotal = float(total_subtotal)
             except (ValueError, TypeError):
@@ -100,23 +101,25 @@ class AggregatorQuery2:
             key = (month, item_id if not isinstance(item_id, str) else item_id.strip())
             
             # Acumular métricas para esta sesión
-            session_data['month_item_metrics'][key]['total_quantity'] += total_quantity
-            session_data['month_item_metrics'][key]['total_subtotal'] += total_subtotal
+            idx = INDEX_METRICS
+            session_data['metrics'][key][idx["total_quantity"]] += total_quantity
+            session_data['metrics'][key][idx["total_subtotal"]] += total_subtotal
+            
         
         session_data['batches_received'] += 1
         # Log solo cada 100 batches para reducir verbosidad
         if session_data['batches_received'] % 10000 == 0:
-            logger.info(f"[AggregatorQuery2] Sesión {session_id}: Procesados {session_data['batches_received']} batches, combinaciones: {len(session_data['month_item_metrics'])}")
+            logger.info(f"[AggregatorQuery2] Sesión {session_id}: Procesados {session_data['batches_received']} batches, combinaciones: {len(session_data['metrics'])}")
     
     def generate_final_results(self, session_id):
         """Genera los resultados finales para Query 2 con JOIN para una sesión específica."""
         session_data = self.get_session_data(session_id)
         
         logger.info(f"[AggregatorQuery2] Generando resultados finales para sesión {session_id}...")
-        logger.info(f"[AggregatorQuery2] Total combinaciones procesadas: {len(session_data['month_item_metrics'])}")
+        logger.info(f"[AggregatorQuery2] Total combinaciones procesadas: {len(session_data['metrics'])}")
         logger.info(f"[AggregatorQuery2] Menu items disponibles para JOIN: {len(session_data['item_id_to_name'])}")
         
-        if not session_data['month_item_metrics']:
+        if not session_data['metrics']:
             logger.warning(f"[AggregatorQuery2] No hay datos para procesar en sesión {session_id}")
             return []
         
@@ -126,17 +129,17 @@ class AggregatorQuery2:
         
         # Preparar resultados por mes con JOIN
         results_by_month = defaultdict(list)
-        
+        idx = INDEX_METRICS
         # Agrupar por mes y hacer JOIN con menu_items
-        for (month, item_id), metrics in session_data['month_item_metrics'].items():
+        for (month, item_id), metrics in session_data['metrics'].items():
             # JOIN: buscar item_name para el item_id de esta sesión (o fallback al propio id)
             item_name = session_data['item_id_to_name'].get(item_id) or str(item_id)
             
             results_by_month[month].append({
                 'item_id': item_id,
                 'item_name': item_name,
-                'total_quantity': metrics['total_quantity'],
-                'total_subtotal': metrics['total_subtotal']
+                'total_quantity': metrics[idx["total_quantity"]],
+                'total_subtotal': metrics[idx["total_subtotal"]]
             })
         
         final_results = []
@@ -218,7 +221,7 @@ class AggregatorQuery2:
         #memoria 
         if session_id in self.session_data:
                 del self.session_data[session_id]
-        
+
     def on_metrics_message(self, body):
         """Maneja mensajes de métricas de group_by_query2."""
         
@@ -236,6 +239,7 @@ class AggregatorQuery2:
         
         if self.session_tracker.update(session_id, "metricas", batch_id, is_eos):              
             self.generate_and_send_results(session_id)
+            self.__del_session(session_id)
     
     def on_menu_items_message(self, body):
         """Maneja mensajes de menu_items para el JOIN."""
@@ -254,6 +258,8 @@ class AggregatorQuery2:
         
         if self.session_tracker.update(session_id, "menu_items", batch_id, is_eos):
             self.generate_and_send_results(session_id)
+            self.__del_session(session_id)
+            
             
     
     def consume_metrics(self):

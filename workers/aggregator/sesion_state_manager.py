@@ -16,14 +16,8 @@ class SessionStateManager:
         self.base_dir = base_dir
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
-    
-    def save_type_state(self, session_id, data_type, aggregator_data, tracker_data, add:bool = False): 
-        if add: 
-            self.__save_type_state_add(session_id, data_type, aggregator_data, tracker_data)
-        else:
-            self.__save_type_state_update(session_id, data_type, aggregator_data, tracker_data)
             
-    def __save_type_state_update(self, session_id, data_type, aggregator_data, tracker_data):
+    def save_type_state(self, session_id, data_type, aggregator_data, tracker_data):
         """
         Guarda atómicamente SOLO el estado de un tipo específico para una sesión.
         Crea la carpeta de la sesión si no existe.
@@ -53,7 +47,7 @@ class SessionStateManager:
         except Exception as e:
             logger.error(f"Error guardando {data_type} para sesión {session_id}: {e}")
     
-    def __save_type_state_add(self, session_id, data_type, aggregator_data, tracker_data):
+    def save_type_state_add(self, session_id, data_type, aggregator_data, tracker_data):
         # Estructura: ./data/sessions/{session_id}/{data_type}
         session_dir = os.path.join(self.base_dir, f"{session_id}/{data_type}")
         os.makedirs(session_dir, exist_ok=True)

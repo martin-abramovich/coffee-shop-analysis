@@ -309,7 +309,7 @@ class AggregatorQuery4:
     def __save_session_type_add(self, session_id, type: str, new_data):
         tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
                     
-        self.state_manager.save_type_state(session_id, type, new_data, tracker_snap, add=True)
+        self.state_manager.save_type_state_add(session_id, type, new_data, tracker_snap)
         
     def __on_transactions_message(self, body):
         """Maneja mensajes de conteos de transacciones de group_by_query4."""        
