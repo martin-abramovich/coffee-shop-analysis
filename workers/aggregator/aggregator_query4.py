@@ -7,6 +7,7 @@ import time
 import re
 from collections import defaultdict
 from datetime import datetime
+import traceback
 
 from common.logger import init_log
 from workers.aggregator.sesion_state_manager import SessionStateManager
@@ -99,6 +100,7 @@ class AggregatorQuery4:
     def __load_users(self, rows, session_id):
         """Carga users para construir el diccionario user_id -> birthdate para una sesión específica."""
         session_data = self.__get_session_data(session_id)
+        new_users = {}
         
         for row in rows:
             user_id = row.get('user_id')
@@ -109,7 +111,7 @@ class AggregatorQuery4:
                 continue
             if birthdate is None:
                 continue
-            normalized_user_id = canonicalize_id(user_id)
+            normalized_user_id = int(canonicalize_id(user_id))
             normalized_birthdate = birthdate.strip()
             if normalized_birthdate == "":
                 # sin fecha
@@ -119,8 +121,10 @@ class AggregatorQuery4:
             if not is_valid_format:
                 continue
             if normalized_user_id:
-                session_data['users'][int(normalized_user_id)] = normalized_birthdate
+                session_data['users'][normalized_user_id] = normalized_birthdate
+                new_users[normalized_user_id] = normalized_birthdate
         
+        return new_users
     
     def __accumulate_transactions(self, rows, session_id):
         """Acumula conteos de transacciones de group_by_query4 para una sesión específica."""
@@ -301,7 +305,12 @@ class AggregatorQuery4:
         session_snap = self.__get_session_data(session_id)[type]
                     
         self.state_manager.save_type_state(session_id, type, session_snap, tracker_snap)
-   
+    
+    def __save_session_type_add(self, session_id, type: str, new_data):
+        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
+                    
+        self.state_manager.save_type_state(session_id, type, new_data, tracker_snap, add=True)
+        
     def __on_transactions_message(self, body):
         """Maneja mensajes de conteos de transacciones de group_by_query4."""        
         
@@ -345,18 +354,19 @@ class AggregatorQuery4:
             self.__save_session_type(session_id, "stores")
     
     def __on_users_message(self, body):
+        """Maneja mensajes de users para el JOIN."""
+        
         try:
-            """Maneja mensajes de users para el JOIN."""
-            
             header, rows = deserialize_message(body)       
             session_id = header.get("session_id", "unknown")
             batch_id = int(header.get("batch_id"))
             is_eos = header.get("is_eos") == "true"
+            new_users = {}
             
             if is_eos: logger.info(f"Se recibió EOS en users para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
 
             if rows:
-                self.__load_users(rows, session_id)
+                new_users = self.__load_users(rows, session_id)
             
             if self.session_tracker.update(session_id, "users", batch_id, is_eos):
                 self.__generate_and_send_results(session_id)
@@ -364,10 +374,12 @@ class AggregatorQuery4:
                 self.__del_session(session_id)
                 
             else:
+                self.__save_session_type_add(session_id, "users", new_users)
                 pass 
-                #self.__save_session_type(session_id, "users")
+            
         except Exception as e: 
             logger.error(f"[AggregatorQuery4] Error procesando el mensaje de users: {e}")
+            logger.error(traceback.format_exc())
             
     def __consume_transactions(self):
         try:

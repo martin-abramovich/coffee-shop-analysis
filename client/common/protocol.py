@@ -144,14 +144,6 @@ def encode_bool(b: bool) -> bytes:
     """Codifica bool como 1 byte"""
     return (1 if b else 0).to_bytes(1, byteorder='big', signed=False)
 
-    """Parsea un string a booleano"""
-    return bool_str.lower() in ('true', '1', 'yes', 'y')
-
-    """Parsea una fecha opcional"""
-    if not date_str or date_str.strip() == '':
-        return None
-    return parse_date(date_str)
-
 def encode_date_str(date_str: str) -> bytes:
     """Convierte un string 'YYYY-MM-DD' a 8 bytes timestamp"""
     try:

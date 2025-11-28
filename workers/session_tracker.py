@@ -131,6 +131,6 @@ class SessionTracker:
         session_info = self.sessions[session_id]
         with session_info["_lock"]:
             if entity_type in session_info:
-                # Retornamos copia del dict de ese tipo (ranges, expected, done)
+                # Retornamos copia del dict de ese tipo (ranges, expected, done)            
                 return session_info[entity_type].copy()
         return {}
