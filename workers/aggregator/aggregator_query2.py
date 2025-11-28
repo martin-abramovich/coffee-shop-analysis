@@ -71,7 +71,7 @@ class AggregatorQuery2:
             if item_id and item_name:
                 session_data['item_id_to_name'][item_id] = item_name.strip()
         
-        print(f"[AggregatorQuery2] Sesión {session_id}: Cargados {len(session_data['item_id_to_name'])} menu items para JOIN")
+        logger.info(f"[AggregatorQuery2] Sesión {session_id}: Cargados {len(session_data['item_id_to_name'])} menu items para JOIN")
     
     def accumulate_metrics(self, rows, session_id):
         """Acumula métricas parciales de group_by_query2 para una sesión específica."""
@@ -106,23 +106,23 @@ class AggregatorQuery2:
         session_data['batches_received'] += 1
         # Log solo cada 100 batches para reducir verbosidad
         if session_data['batches_received'] % 10000 == 0:
-            print(f"[AggregatorQuery2] Sesión {session_id}: Procesados {session_data['batches_received']} batches, combinaciones: {len(session_data['month_item_metrics'])}")
+            logger.info(f"[AggregatorQuery2] Sesión {session_id}: Procesados {session_data['batches_received']} batches, combinaciones: {len(session_data['month_item_metrics'])}")
     
     def generate_final_results(self, session_id):
         """Genera los resultados finales para Query 2 con JOIN para una sesión específica."""
         session_data = self.get_session_data(session_id)
         
-        print(f"[AggregatorQuery2] Generando resultados finales para sesión {session_id}...")
-        print(f"[AggregatorQuery2] Total combinaciones procesadas: {len(session_data['month_item_metrics'])}")
-        print(f"[AggregatorQuery2] Menu items disponibles para JOIN: {len(session_data['item_id_to_name'])}")
+        logger.info(f"[AggregatorQuery2] Generando resultados finales para sesión {session_id}...")
+        logger.info(f"[AggregatorQuery2] Total combinaciones procesadas: {len(session_data['month_item_metrics'])}")
+        logger.info(f"[AggregatorQuery2] Menu items disponibles para JOIN: {len(session_data['item_id_to_name'])}")
         
         if not session_data['month_item_metrics']:
-            print(f"[AggregatorQuery2] No hay datos para procesar en sesión {session_id}")
+            logger.warning(f"[AggregatorQuery2] No hay datos para procesar en sesión {session_id}")
             return []
         
         # Si no hay menu_items para esta sesión, haremos un fallback usando item_id como nombre
         if not session_data['item_id_to_name']:
-            print(f"[AggregatorQuery2] WARNING: No hay menu_items cargados para sesión {session_id}. Se usará item_id como item_name (fallback)")
+            logger.warning(f"[AggregatorQuery2] WARNING: No hay menu_items cargados para sesión {session_id}. Se usará item_id como item_name (fallback)")
         
         # Preparar resultados por mes con JOIN
         results_by_month = defaultdict(list)
@@ -167,8 +167,8 @@ class AggregatorQuery2:
         # Ordenar por mes para consistencia
         final_results.sort(key=lambda x: x['year_month_created_at'])
         
-        print(f"[AggregatorQuery2] Resultados generados para {len(results_by_month)} meses")
-        print(f"[AggregatorQuery2] Total registros de resultados: {len(final_results)}")
+        logger.info(f"[AggregatorQuery2] Resultados generados para {len(results_by_month)} meses")
+        logger.info(f"[AggregatorQuery2] Total registros de resultados: {len(final_results)}")
      
         return final_results
     
@@ -177,7 +177,7 @@ class AggregatorQuery2:
             
         # Generar resultados finales (TOP productos por mes) para esta sesión
         final_results = self.generate_final_results(session_id)
-        print(f"[AggregatorQuery2] Resultados generados: {len(final_results)} registros")
+        logger.info(f"[AggregatorQuery2] Resultados generados: {len(final_results)} registros")
         
         if final_results:
             # Enviar resultados finales con headers completos
@@ -195,8 +195,10 @@ class AggregatorQuery2:
             }
             
             # Enviar en batches el conjunto combinado (dos filas por mes)
-            batch_size = 50
+            batch_size = 1000
+            mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
             total_batches = (len(final_results) + batch_size - 1) // batch_size
+            
             for i in range(0, len(final_results), batch_size):
                 batch = final_results[i:i + batch_size]
                 batch_header = results_header.copy()
@@ -204,15 +206,19 @@ class AggregatorQuery2:
                 batch_header["total_batches"] = str(total_batches)
                 result_msg = serialize_message(batch, batch_header)
                 
-                self.mq_out.send(result_msg)
-        else:
-            print("[AggregatorQuery2] No hay resultados para enviar")
-        
-        if session_id in self.session_data:
-            del self.session_data[session_id]
+                mq_out.send(result_msg)
             
-        print(f"[AggregatorQuery2] Resultados finales enviados para sesión {session_id}. Worker continúa activo.")
-    
+            mq_out.close()
+        else:
+            logger.warning("[AggregatorQuery2] No hay resultados para enviar")
+            
+        logger.info(f"[AggregatorQuery2] Resultados finales enviados para sesión {session_id}. Worker continúa activo.")
+
+    def __del_session(self, session_id):
+        #memoria 
+        if session_id in self.session_data:
+                del self.session_data[session_id]
+        
     def on_metrics_message(self, body):
         """Maneja mensajes de métricas de group_by_query2."""
         
@@ -223,7 +229,7 @@ class AggregatorQuery2:
         is_eos = header.get("is_eos") == "true"
         
         if is_eos:
-            print(f"Se recibió EOS en metricas para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
+            logger.info(f"Se recibió EOS en metricas para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
             
         if rows:
             self.accumulate_metrics(rows, session_id)
@@ -233,7 +239,6 @@ class AggregatorQuery2:
     
     def on_menu_items_message(self, body):
         """Maneja mensajes de menu_items para el JOIN."""
-        print(f"[AggregatorQuery2] Mensaje recibido en menu_items: {len(body)} bytes")
         
         header, rows = deserialize_message(body)
             
@@ -242,38 +247,51 @@ class AggregatorQuery2:
         is_eos = header.get("is_eos") == "true"
         
         if is_eos:
-            print(f"Se recibió EOS en metricas para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
+            logger.info(f"Se recibió EOS en metricas para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
         
         if rows:
             self.load_menu_items(rows, session_id)
         
         if self.session_tracker.update(session_id, "menu_items", batch_id, is_eos):
             self.generate_and_send_results(session_id)
+            
     
     def consume_metrics(self):
         try:
+            self.mq_metrics = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q2")
             self.mq_metrics.start_consuming(self.on_metrics_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
-                print(f"[AggregatorQuery2] Error en consumo de métricas: {e}")
+                logger.error(f"[AggregatorQuery2] Error en consumo de métricas: {e}")
+            else:
+                self.mq_metrics.close()
 
     def consume_menu_items(self):
         try:
+            self.mq_menu_items = MessageMiddlewareQueue(RABBIT_HOST, MENU_ITEMS_QUEUE)
             self.mq_menu_items.start_consuming(self.on_menu_items_message)
         except Exception as e:
             if not self.shutdown_event.is_set():
-                print(f"[AggregatorQuery2] Error en consumo de menu_items: {e}")
+                logger.error(f"[AggregatorQuery2] Error en consumo de menu_items: {e}")
+            else:
+                self.mq_menu_items.close()
                 
     def __init_healthcheck(self):
         "Iniciar servidor de healthcheck UDP"
         
         healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
         start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query2", shutdown_event=self.shutdown_event)
-        print(f"[AggregatorQuery2] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
+        logger.info(f"[AggregatorQuery2] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
     def signal_handler(self,signum, frame):
-        print(f"[AggregatorQuery2] Señal {signum} recibida, cerrando...")
+        logger.info(f"[AggregatorQuery2] Señal {signum} recibida, cerrando...")
         self.shutdown_event.set()
+        
+        for mq in [self.mq_metrics, self.mq_menu_items]:
+                try:
+                    mq.stop_consuming()
+                except Exception as e:
+                    logger.error(f"Error al parar el consumo: {e}")
     
     def __init_signal_handler(self):
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -283,67 +301,30 @@ class AggregatorQuery2:
         self.__init_healthcheck()
         self.__init_signal_handler()
         
-        # Entrada 1: métricas del group_by_query2
-        self.mq_metrics = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q2")
+        logger.info("[*] AggregatorQuery2 esperando mensajes...")
+        logger.info("[*] Query 2: Productos más vendidos y mayor ganancia por mes 2024-2025")
+        logger.info("[*] Consumiendo de 2 fuentes: métricas + menu_items para JOIN")
         
-        # Entrada 2: menu_items para JOIN
-        self.mq_menu_items = MessageMiddlewareQueue(RABBIT_HOST, MENU_ITEMS_QUEUE)
+        self.__run()
+
+                
+        logger.info("[x] AggregatorQuery2 detenido")
+
+    def __run(self):
+        metrics_thread = threading.Thread(target=self.consume_metrics, daemon=True)
+        menu_items_thread = threading.Thread(target=self.consume_menu_items, daemon=True)
         
-        # Salida: exchange para resultados finales
-        self.mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+        metrics_thread.start()
+        menu_items_thread.start()
         
-        print("[*] AggregatorQuery2 esperando mensajes...")
-        print("[*] Query 2: Productos más vendidos y mayor ganancia por mes 2024-2025")
-        print("[*] Consumiendo de 2 fuentes: métricas + menu_items para JOIN")
-        print(f"[*] Escuchando métricas de: {INPUT_EXCHANGE} con routing key '{INPUT_ROUTING_KEY}'")
-        print(f"[*] Escuchando menu_items de: {MENU_ITEMS_QUEUE}")
-        print("[*] Esperará hasta recibir EOS de ambas fuentes para generar reporte")
+        logger.info("[AggregatorQuery2] Worker iniciado, esperando mensajes de múltiples sesiones...")
         
-        try:
-            # Ejecutar ambos consumidores en paralelo como daemon threads
-            metrics_thread = threading.Thread(target=self.consume_metrics, daemon=True)
-            menu_items_thread = threading.Thread(target=self.consume_menu_items, daemon=True)
-            
-            metrics_thread.start()
-            menu_items_thread.start()
-            
-            # Esperar indefinidamente - el worker NO termina después de EOS
-            # Solo termina por señal externa (SIGTERM, SIGINT)
-            print("[AggregatorQuery2] Worker iniciado, esperando mensajes de múltiples sesiones...")
-            print("[AggregatorQuery2] El worker continuará procesando múltiples clientes")
-            
-            # Loop principal - solo termina por señal
-            while not self.shutdown_event.is_set():
-                metrics_thread.join(timeout=1)
-                menu_items_thread.join(timeout=1)
-                if not metrics_thread.is_alive() and not menu_items_thread.is_alive():
-                    break
-            
-            print("[AggregatorQuery2] Terminando por señal externa")
-            
-        except KeyboardInterrupt:
-            print("\n[AggregatorQuery2] Interrupción recibida")
-            self.shutdown_event.set()
-        finally:
-            for mq in [self.mq_metrics, self.mq_menu_items]:
-                try:
-                    mq.stop_consuming()
-                except Exception as e:
-                    print(f"Error al parar el consumo: {e}")
-            
-            
-            # Cerrar conexiones
-            for mq in [self.mq_metrics, self.mq_menu_items, self.mq_out]:
-                try:
-                    mq.close()
-                except Exception as e:
-                    print(f"Error al cerrar conexión: {e}")
-        
-            print("[x] AggregatorQuery2 detenido")
+        metrics_thread.join()
+        menu_items_thread.join()
 
     
 if __name__ == "__main__":
-    #logger = init_log("AgregatorQuery2")
+    logger = init_log("AgregatorQuery2")
     aggregator = AggregatorQuery2()
     aggregator.start()
     
