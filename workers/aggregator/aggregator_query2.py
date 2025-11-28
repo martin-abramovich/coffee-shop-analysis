@@ -4,8 +4,10 @@ import signal
 import threading
 import time
 from collections import defaultdict
+import traceback
 
 from common.logger import init_log
+from workers.aggregator.sesion_state_manager import SessionStateManager
 from workers.session_tracker import SessionTracker
 
 # Añadir paths al PYTHONPATH
@@ -39,44 +41,43 @@ class AggregatorQuery2:
         self.session_data = {}
         
         self.shutdown_event = threading.Event()
-        self.session_tracker = SessionTracker(["metricas", "menu_items"])
+        self.session_tracker = SessionTracker(["metrics", "menu_items"])
+        self.state_manager = SessionStateManager()
         
         #in
         self.mq_metrics = None         
         self.mq_menu_items = None 
         
     
-    def initialize_session(self, session_id):
+    def __initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
         if session_id not in self.session_data:
             self.session_data[session_id] = {
-                'metrics': defaultdict(lambda:[0,0.0]),
-                'batches_received': 0,
-                # Diccionario de JOIN específico de esta sesión
-                'item_id_to_name': {},
+                'metrics': {},
+                'menu_items': {},
             }
     
-    def get_session_data(self, session_id):
+    def __get_session_data(self, session_id):
         """Obtiene los datos de una sesión específica"""
-        self.initialize_session(session_id)
+        self.__initialize_session(session_id)
         return self.session_data[session_id]
         
     def load_menu_items(self, rows, session_id):
         """Carga menu_items para construir el diccionario item_id -> item_name para una sesión específica."""
-        session_data = self.get_session_data(session_id)
+        session_data = self.__get_session_data(session_id)
         
         for row in rows:
             item_id = row.get('item_id')
             item_name = row.get('item_name')
             
             if item_id and item_name:
-                session_data['item_id_to_name'][item_id] = item_name.strip()
+                session_data['menu_items'][item_id] = item_name.strip()
         
-        logger.info(f"[AggregatorQuery2] Sesión {session_id}: Cargados {len(session_data['item_id_to_name'])} menu items para JOIN")
+        logger.info(f"[AggregatorQuery2] Sesión {session_id}: Cargados {len(session_data['menu_items'])} menu items para JOIN")
     
     def accumulate_metrics(self, rows, session_id):
         """Acumula métricas parciales de group_by_query2 para una sesión específica."""
-        session_data = self.get_session_data(session_id)
+        session_data = self.__get_session_data(session_id)
         
         for row in rows:
             month = row.get('month')
@@ -100,31 +101,29 @@ class AggregatorQuery2:
             # Clave compuesta: (mes, item_id)
             key = (month, item_id if not isinstance(item_id, str) else item_id.strip())
             
+            if key not in session_data['metrics']:
+                session_data['metrics'][key] = [0, 0.0]
+                
             # Acumular métricas para esta sesión
             idx = INDEX_METRICS
             session_data['metrics'][key][idx["total_quantity"]] += total_quantity
             session_data['metrics'][key][idx["total_subtotal"]] += total_subtotal
             
         
-        session_data['batches_received'] += 1
-        # Log solo cada 100 batches para reducir verbosidad
-        if session_data['batches_received'] % 10000 == 0:
-            logger.info(f"[AggregatorQuery2] Sesión {session_id}: Procesados {session_data['batches_received']} batches, combinaciones: {len(session_data['metrics'])}")
-    
     def generate_final_results(self, session_id):
         """Genera los resultados finales para Query 2 con JOIN para una sesión específica."""
-        session_data = self.get_session_data(session_id)
+        session_data = self.__get_session_data(session_id)
         
         logger.info(f"[AggregatorQuery2] Generando resultados finales para sesión {session_id}...")
         logger.info(f"[AggregatorQuery2] Total combinaciones procesadas: {len(session_data['metrics'])}")
-        logger.info(f"[AggregatorQuery2] Menu items disponibles para JOIN: {len(session_data['item_id_to_name'])}")
+        logger.info(f"[AggregatorQuery2] Menu items disponibles para JOIN: {len(session_data['menu_items'])}")
         
         if not session_data['metrics']:
             logger.warning(f"[AggregatorQuery2] No hay datos para procesar en sesión {session_id}")
             return []
         
         # Si no hay menu_items para esta sesión, haremos un fallback usando item_id como nombre
-        if not session_data['item_id_to_name']:
+        if not session_data['menu_items']:
             logger.warning(f"[AggregatorQuery2] WARNING: No hay menu_items cargados para sesión {session_id}. Se usará item_id como item_name (fallback)")
         
         # Preparar resultados por mes con JOIN
@@ -133,7 +132,7 @@ class AggregatorQuery2:
         # Agrupar por mes y hacer JOIN con menu_items
         for (month, item_id), metrics in session_data['metrics'].items():
             # JOIN: buscar item_name para el item_id de esta sesión (o fallback al propio id)
-            item_name = session_data['item_id_to_name'].get(item_id) or str(item_id)
+            item_name = session_data['menu_items'].get(item_id) or str(item_id)
             
             results_by_month[month].append({
                 'item_id': item_id,
@@ -221,45 +220,75 @@ class AggregatorQuery2:
         #memoria 
         if session_id in self.session_data:
                 del self.session_data[session_id]
+        
+        #data en disco
+        self.state_manager.delete_session(session_id)
+    
+    def __save_session_type(self, session_id, type: str):
+        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
+        session_snap = self.__get_session_data(session_id)[type]
+                    
+        self.state_manager.save_type_state(session_id, type, session_snap, tracker_snap)
+    
+    def __save_session_type_add(self, session_id, type: str, new_data):
+        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
+                    
+        self.state_manager.save_type_state_add(session_id, type, new_data, tracker_snap)
 
     def on_metrics_message(self, body):
         """Maneja mensajes de métricas de group_by_query2."""
-        
-        header, rows = deserialize_message(body)
-       
-        session_id = header.get("session_id", "unknown")
-        batch_id = int(header.get("batch_id"))
-        is_eos = header.get("is_eos") == "true"
-        
-        if is_eos:
-            logger.info(f"Se recibió EOS en metricas para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
-            
-        if rows:
-            self.accumulate_metrics(rows, session_id)
-        
-        if self.session_tracker.update(session_id, "metricas", batch_id, is_eos):              
-            self.generate_and_send_results(session_id)
-            self.__del_session(session_id)
     
+        try:
+            
+            header, rows = deserialize_message(body)
+        
+            session_id = header.get("session_id", "unknown")
+            batch_id = int(header.get("batch_id"))
+            is_eos = header.get("is_eos") == "true"
+            
+            if is_eos:
+                logger.info(f"Se recibió EOS en metrics para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
+                
+            if rows:
+                self.accumulate_metrics(rows, session_id)
+            
+            if self.session_tracker.update(session_id, "metrics", batch_id, is_eos):              
+                self.generate_and_send_results(session_id)
+                self.__del_session(session_id)
+            else:
+                self.__save_session_type(session_id, "metrics")
+                
+        except Exception as e: 
+            logger.error(f"[AggregatorQuery2] Error procesando el mensaje de metrics: {e}")
+            logger.error(traceback.format_exc())
+            
     def on_menu_items_message(self, body):
         """Maneja mensajes de menu_items para el JOIN."""
-        
-        header, rows = deserialize_message(body)
+        try:
+            header, rows = deserialize_message(body)
+                
+            session_id = header.get("session_id", "unknown")
+            batch_id = int(header.get("batch_id"))
+            is_eos = header.get("is_eos") == "true"
             
-        session_id = header.get("session_id", "unknown")
-        batch_id = int(header.get("batch_id"))
-        is_eos = header.get("is_eos") == "true"
-        
-        if is_eos:
-            logger.info(f"Se recibió EOS en metricas para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
-        
-        if rows:
-            self.load_menu_items(rows, session_id)
-        
-        if self.session_tracker.update(session_id, "menu_items", batch_id, is_eos):
-            self.generate_and_send_results(session_id)
-            self.__del_session(session_id)
+            if batch_id == 0 or batch_id % 10000: 
+                logger.info(f"Se recibio batch {batch_id} para sesion {session_id}")
+                
+            if is_eos:
+                logger.info(f"Se recibió EOS en metrics para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
             
+            if rows:
+                self.load_menu_items(rows, session_id)
+            
+            if self.session_tracker.update(session_id, "menu_items", batch_id, is_eos):
+                self.generate_and_send_results(session_id)
+                self.__del_session(session_id)
+            else:
+                self.__save_session_type(session_id, "menu_items")
+        
+        except Exception as e: 
+            logger.error(f"[AggregatorQuery2] Error procesando el mensaje de menu items: {e}")
+            logger.error(traceback.format_exc())
             
     
     def consume_metrics(self):
@@ -302,10 +331,36 @@ class AggregatorQuery2:
     def __init_signal_handler(self):
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGINT, self.signal_handler)
-        
+    
+    def __load_sessions_data(self, data: dict): 
+        for session_id, types_data in data.items():
+            self.__initialize_session(session_id)
+            
+            if 'metrics' in types_data:
+                self.session_data[session_id]['metrics'] =  types_data['metrics']
+               
+            if 'menu_items' in types_data:
+                self.session_data[session_id]['menu_items'] = types_data['menu_items'] 
+            
+      
+    def __load_sessions(self):
+        logger.info("[*] Intentando recuperar estado previo...")
+        saved_data, saved_tracker = self.state_manager.load_all_sessions()
+
+        if saved_data and saved_tracker:
+            self.__load_sessions_data(saved_data)
+            self.session_tracker.load_state_snapshot(saved_tracker)
+            
+            logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
+        else:
+            logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
+    
+    
     def start(self):
         self.__init_healthcheck()
         self.__init_signal_handler()
+        
+        self.__load_sessions()
         
         logger.info("[*] AggregatorQuery2 esperando mensajes...")
         logger.info("[*] Query 2: Productos más vendidos y mayor ganancia por mes 2024-2025")

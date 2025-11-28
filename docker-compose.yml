@@ -356,6 +356,8 @@ services:
         condition: service_healthy
     networks:
       - coffee-network
+    volumes:
+    - ./state/agregator2:/app/state
 
   aggregator_query3:
     build:
