@@ -61,10 +61,13 @@ USER_INDEX = {
 }
 
 def to_int(v):
-        try:
-            return int(v) if v not in ("", None) else 0
-        except:
+    try:
+        if v in ("", None):
             return 0
+        # Convertir a float primero maneja strings como "151.0"
+        return int(float(v)) 
+    except:
+        return 0
         
 def encode_string(s: str) -> bytes:
     """Codifica un string: 4 bytes para tamaño + string en UTF-8"""

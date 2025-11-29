@@ -4,6 +4,7 @@ import sys
 import os
 import threading
 import time
+import traceback
 import uuid
 import json
 from datetime import datetime, timezone
@@ -437,10 +438,12 @@ def handle_client(conn, addr):
                         break
                     else:
                         print(f"[GATEWAY] Error procesando batch: {e}")
+                        print(traceback.format_exc())
                         buffer = b""
                         break
                 except Exception as e:
                     print(f"[GATEWAY] Error procesando batch: {e}")
+                    print(traceback.format_exc())
                     buffer = b""
                     break
         

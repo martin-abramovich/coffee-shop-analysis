@@ -65,7 +65,7 @@ class AggregatorQuery3:
         stores = session_data['stores']
         
         for row in rows:
-            store_id = row.get('store_id')
+            store_id = int(row.get('store_id'))
             store_name = row.get('store_name')
             
             if store_id and store_name:

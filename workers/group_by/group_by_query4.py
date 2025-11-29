@@ -30,8 +30,8 @@ def group_by_store_and_user(rows):
         # Validar datos requeridos
         store_id = int(r.get("store_id"))
         user_id = int(r.get("user_id"))
-        
-        if not store_id  == 0 or user_id == 0 :
+            
+        if store_id  == 0 or user_id == 0 :
             continue
         
         # Clave compuesta: (store_id, user_id)
@@ -39,8 +39,7 @@ def group_by_store_and_user(rows):
         
         # Contar transacciones por cliente en cada sucursal
         metrics[key]['transaction_count'] += 1
-    
-    
+        
     return metrics
 
 
