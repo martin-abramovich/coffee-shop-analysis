@@ -60,6 +60,12 @@ USER_INDEX = {
     "registered_at": 3,
 }
 
+def to_int(v):
+        try:
+            return int(v) if v not in ("", None) else 0
+        except:
+            return 0
+        
 def encode_string(s: str) -> bytes:
     """Codifica un string: 4 bytes para tamaño + string en UTF-8"""
     s_bytes = s.encode('utf-8')
@@ -119,27 +125,6 @@ def encode_int(i: int) -> bytes:
         i = 0
     return i.to_bytes(4, byteorder='big', signed=False)
 
-# def encode_datetime(dt: datetime) -> bytes:
-#     """Codifica datetime como timestamp (8 bytes)"""
-#     try:
-#         timestamp = int(dt.timestamp())
-#         # Manejar timestamps negativos (fechas antes de 1970)
-#         if timestamp < 0:
-#             # Para fechas muy antiguas, usar una fecha mínima válida
-#             timestamp = 0
-#         return timestamp.to_bytes(8, byteorder='big', signed=False)
-#     except (ValueError, OSError, OverflowError):
-#         # Si hay error, usar timestamp 0
-#         return (0).to_bytes(8, byteorder='big', signed=False)
-
-# def encode_date(d: date) -> bytes:
-#     """Codifica date como timestamp (8 bytes)"""
-#     try:
-#         dt = datetime.combine(d, datetime.min.time())
-#         return encode_datetime(dt)
-#     except (ValueError, OSError, OverflowError):
-#         # Si hay error, usar timestamp 0
-#         return (0).to_bytes(8, byteorder='big', signed=False)
 
 def encode_bool(b: bool) -> bytes:
     """Codifica bool como 1 byte"""
@@ -194,16 +179,18 @@ def encode_datetime(s) -> bytes:
 def encode_transaction(row: list) -> bytes:
     idx = TRANSACTION_INDEX
     
-    data += encode_string(row[idx['transaction_id']])
-    data += encode_string(row[idx['store_id']])
-    data += encode_string(row[idx['payment_method_id']])
-    data += encode_string(row[idx['voucher_id']])
-    data += encode_string(row[idx['user_id']])
-    data += encode_float(float(row[idx['original_amount']]))
-    data += encode_float(float(row[idx['discount_applied']]))
-    data += encode_float(float(row[idx['final_amount']]))
-    data += encode_datetime_str(row[idx['created_at']])
-    return data
+    b = bytearray()
+    b.extend(encode_string(row[idx['transaction_id']]))
+    b.extend(encode_int(to_int(row[idx['store_id']])))
+    b.extend(encode_int(to_int(row[idx['payment_method_id']])))
+    b.extend(encode_int(to_int(row[idx['voucher_id']])))
+    b.extend(encode_int(to_int(row[idx['user_id']])))
+    b.extend(encode_float(float(row[idx['original_amount']])))
+    b.extend(encode_float(float(row[idx['discount_applied']])))
+    b.extend(encode_float(float(row[idx['final_amount']])))
+    b.extend(encode_datetime(row[idx['created_at']]))
+    
+    return b
 
 
 def encode_transaction_item(row: list) -> bytes:

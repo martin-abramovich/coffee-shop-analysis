@@ -158,14 +158,14 @@ def parse_item(data, offset, entity_type):
         # transaction_id (str), store_id (str), payment_method (str), voucher_id (str),
         # user_id (str), original_amount (f32), discount_applied (f32), final_amount (f32), created_at (u64)
         trans_id, offset = read_string(data, offset)
-        store_id, offset = read_string(data, offset)
-        _payment_method, offset = read_string(data, offset)
-        _voucher_id, offset = read_string(data, offset)
-        user_id, offset = read_string(data, offset)
+        store_id, offset = read_uint32(data, offset)
+        _payment_method, offset = read_uint32(data, offset)
+        _voucher_id, offset = read_uint32(data, offset)
+        user_id, offset = read_uint32(data, offset)
         _original_amount, offset = read_float(data, offset)
         _discount_applied, offset = read_float(data, offset)
         final_amount, offset = read_float(data, offset)
-        created_at_iso, offset = read_datetime_as_iso(data, offset)
+        created_at_iso, offset = read_uint32(data, offset)
         # Conservar solo los campos necesarios para el reducer
         item['transaction_id'] = trans_id
         item['store_id'] = store_id

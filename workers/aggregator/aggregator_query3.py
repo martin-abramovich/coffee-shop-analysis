@@ -6,6 +6,7 @@ import threading
 import time
 from collections import defaultdict
 
+from common.utils import yyyys_int_to_string
 from workers.aggregator.sesion_state_manager import SessionStateManager
 from common.logger import init_log
 from workers.session_tracker import SessionTracker
@@ -81,20 +82,14 @@ class AggregatorQuery3:
         batches_received = session_data["tpv"]['batches_received']
         
         for row in rows:
-            semester = row.get('semester')
-            store_id = row.get('store_id')
-            total_payment_value = row.get('total_payment_value', 0.0)
+            semester = int(row.get('semester', 0))
+            store_id = int(row.get('store_id', 0))
+            total_payment_value = float(row.get('total_payment_value', 0.0))
             
             # Validar campos requeridos
-            if not semester or not store_id:
+            if semester == 0 or store_id == 0:
                 continue
                 
-            # Convertir a tipo correcto
-            try:
-                if isinstance(total_payment_value, str):
-                    total_payment_value = float(total_payment_value)
-            except (ValueError, TypeError):
-                continue
             
             # Clave compuesta: (semestre, store_id)
             key = (semester, store_id)
@@ -138,7 +133,7 @@ class AggregatorQuery3:
                 continue
                         
             final_results.append({
-                'year_half_created_at': semester,
+                'year_half_created_at': yyyys_int_to_string(semester),
                 'store_name': store_name,
                 'tpv': round(total_tpv, 2)  # Redondear TPV a 2 decimales
             })

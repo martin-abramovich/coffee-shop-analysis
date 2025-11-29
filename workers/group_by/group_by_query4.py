@@ -3,6 +3,7 @@ import os
 import signal
 import threading
 from collections import defaultdict
+import traceback
 
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -27,25 +28,18 @@ def group_by_store_and_user(rows):
     
     for r in rows:
         # Validar datos requeridos
-        store_id = r.get("store_id")
-        user_id = r.get("user_id")
+        store_id = int(r.get("store_id"))
+        user_id = int(r.get("user_id"))
         
-        if not store_id or not store_id.strip() or not user_id or not user_id.strip():
+        if not store_id  == 0 or user_id == 0 :
             continue
         
-        try:
-            normalized_store_id = store_id.strip()
-            normalized_user_id = user_id.strip()
-            
-            # Clave compuesta: (store_id, user_id)
-            key = (normalized_store_id, normalized_user_id)
-            
-            # Contar transacciones por cliente en cada sucursal
-            metrics[key]['transaction_count'] += 1
-            
-        except Exception:
-            # Ignorar filas con datos inválidos
-            continue
+        # Clave compuesta: (store_id, user_id)
+        key = (store_id, user_id)
+        
+        # Contar transacciones por cliente en cada sucursal
+        metrics[key]['transaction_count'] += 1
+    
     
     return metrics
 
@@ -54,34 +48,41 @@ batches_sent = 0
 
 def on_message(body):
     global batches_sent
-    header, rows = deserialize_message(body)
     
-    store_user_metrics = group_by_store_and_user(rows)
+    try: 
     
-    batch_records = []
-    for (store_id, user_id), metrics in store_user_metrics.items():
-        if metrics['transaction_count'] > 0:
-            # Crear un registro único con las métricas de (store, user)
-            query4_record = {
-                'store_id': store_id,
-                'user_id': user_id,
-                'transaction_count': metrics['transaction_count']
-            }
-            batch_records.append(query4_record)
-    
-
-    out_msg = serialize_message(batch_records, header)
-    group_by_queue.send(out_msg)
-    batches_sent += 1
-
-    
-    if batches_sent <= 3 or batches_sent % 10000 == 0:
-        total_in = len(rows)
-        unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
-        unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
+        header, rows = deserialize_message(body)
         
-        print(f"[GroupByQuery4] batches_sent={batches_sent} in={total_in} created={len(store_user_metrics)} stores={unique_stores} users={unique_users}")
+        store_user_metrics = group_by_store_and_user(rows)
+        
+        batch_records = []
+        for (store_id, user_id), metrics in store_user_metrics.items():
+            if metrics['transaction_count'] > 0:
+                # Crear un registro único con las métricas de (store, user)
+                query4_record = {
+                    'store_id': store_id,
+                    'user_id': user_id,
+                    'transaction_count': metrics['transaction_count']
+                }
+                batch_records.append(query4_record)
+        
 
+        out_msg = serialize_message(batch_records, header)
+        group_by_queue.send(out_msg)
+        batches_sent += 1
+
+        
+        if batches_sent <= 3 or batches_sent % 10000 == 0:
+            total_in = len(rows)
+            unique_stores = len(set(store_id for store_id, _ in store_user_metrics.keys()))
+            unique_users = len(set(user_id for _, user_id in store_user_metrics.keys()))
+            
+            print(f"[GroupByQuery4] batches_sent={batches_sent} in={total_in} created={len(store_user_metrics)} stores={unique_stores} users={unique_users}")
+    
+    except Exception as e: 
+        print(f"[GroupByQuery4] Error procesando el mensaje de transactions: {e}")
+        print(traceback.format_exc())
+        
 if __name__ == "__main__":
     print(f"[GroupByQuery4] Iniciando worker {WORKER_ID}...")
     shutdown_event = threading.Event()

@@ -22,7 +22,7 @@ from workers.utils import deserialize_message, serialize_message
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 
 DEFAULT_DATA_CONFIGS_STATE_MANAGER = {
-    "transactions":        (list, merge_list),
+    "transactions": (list, merge_list),
 }
 
 INPUT_EXCHANGE = "transactions_amount"    # exchange del filtro por amount

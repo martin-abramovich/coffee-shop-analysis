@@ -9,6 +9,7 @@ import time
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
+from common.utils import timestamp_to_year_semester
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 from common.healthcheck import start_healthcheck_server
@@ -22,31 +23,6 @@ INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
 OUTPUT_EXCHANGE = "transactions_query3"  # exchange de salida para query 3
 ROUTING_KEY = "query3"                   # routing para topic
 
-def parse_semester(created_at: str) -> str:
-    """Extrae el año-semestre de created_at. Retorna formato 'YYYY-H1' o 'YYYY-H2'."""
-    if not created_at:
-        raise ValueError("created_at vacío")
-    
-    try:
-        # Intentar extraer directamente el mes de los primeros caracteres (YYYY-MM)
-        month_str = created_at[5:7]  # Extraer MM de YYYY-MM-DD
-        month = int(month_str)
-        year_str = created_at[:4]    # Extraer YYYY
-        
-        # Determinar semestre basado en el mes
-        semester = "H1" if month <= 6 else "H2"
-        return f"{year_str}-{semester}"
-        
-    except Exception:
-        # Fallback: parsing completo
-        try:
-            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            semester = "H1" if dt.month <= 6 else "H2"
-            return f"{dt.year}-{semester}"
-        except Exception:
-            dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-            semester = "H1" if dt.month <= 6 else "H2"
-            return f"{dt.year}-{semester}"
 
 def group_by_semester_and_store(rows):
     """Agrupa por (semestre, store_id) y calcula TPV para Query 3."""
@@ -56,25 +32,18 @@ def group_by_semester_and_store(rows):
     
     for r in rows:
         # Validar datos requeridos
-        created_at = r.get("created_at")
-        store_id = r.get("store_id")
+        created_at = int(r.get("created_at"))
+        store_id = int(r.get("store_id", 0))
+        final_amount = float(r.get("final_amount", 0.0))
         
-        if not created_at or not store_id or not store_id.strip():
+        if not created_at or store_id == 0:
             continue
         
         try:
-            semester = parse_semester(created_at)
-            normalized_store_id = store_id.strip()
-            
-            # Extraer final_amount de la fila
-            final_amount = r.get("final_amount", 0.0)
-            
-            # Convertir a tipo numérico si viene como string
-            if isinstance(final_amount, str):
-                final_amount = float(final_amount) if final_amount else 0.0
+            semester = timestamp_to_year_semester(created_at)
             
             # Clave compuesta: (semestre, store_id)
-            key = (semester, normalized_store_id)
+            key = (semester, store_id)
             
             # Acumular TPV (Total Payment Value)
             metrics[key]['total_payment_value'] += final_amount

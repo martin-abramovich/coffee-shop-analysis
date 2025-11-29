@@ -143,28 +143,15 @@ class AggregatorQuery4:
         new_transactions = defaultdict(int)
 
         for row in rows:
-            store_id = row.get('store_id')
-            user_id = row.get('user_id')
-            transaction_count = row.get('transaction_count', 0)
+            store_id = int(row.get('store_id'))
+            user_id = int(row.get('user_id'))
+            transaction_count = int(row.get('transaction_count', 0))
             
             # Validar campos requeridos
-            if not store_id or not user_id:
-                continue
-                
-            # Convertir a tipo correcto
-            try:
-                if isinstance(transaction_count, str):
-                    transaction_count = int(transaction_count)
-            except (ValueError, TypeError):
+            if store_id == 0 or user_id == 0:
                 continue
             
-            # Clave compuesta: (store_id, user_id)
-            normalized_store_id = canonicalize_id(store_id)
-            normalized_user_id = canonicalize_id(user_id)
-            if not normalized_store_id or not normalized_user_id:
-                continue
-            key = (int(normalized_store_id), int(normalized_user_id))
-            
+            key = (store_id, user_id)
             
             # Acumular conteo de transacciones para esta sesión
             session_data["transactions"][key] += transaction_count

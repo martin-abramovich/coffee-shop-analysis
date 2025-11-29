@@ -53,25 +53,8 @@ def year_from_timestamp(ts: int) -> int:
     y = yoe + era * 400
     return y + 1 
 
+
 def filter_by_year(rows):
-    """Mantiene filas con created_at entre 2024 y 2025 (inclusive)."""
-    filtered = []
-    for r in rows:
-        created = r.get("created_at")
-        if not created:
-            continue
-        try:
-            # Soporta formatos ISO (del gateway) y 'YYYY-MM-DD HH:MM:SS'
-            year = int(created[:4])
-            if 2024 <= year <= 2025:
-                filtered.append(r)
-        except Exception:
-            continue
-        
-    return filtered
-
-
-def item_filter_by_year(rows):
     """Mantiene filas con created_at entre 2024 y 2025 (inclusive)."""
     filtered = []
     for r in rows:
@@ -109,7 +92,7 @@ def on_trans_item_message(body):
         if (header.get("is_eos") == "true"): 
             print("SE RECIBIO EOS") 
 
-        filtered = item_filter_by_year(rows)    
+        filtered = filter_by_year(rows)    
         
         out_msg = serialize_message(filtered, header)
         filter_trans_item_queue.send(out_msg)
