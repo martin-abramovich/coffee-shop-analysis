@@ -188,12 +188,12 @@ def parse_item(data, offset, entity_type):
         item['created_at'] = created_at_iso
         
     elif entity_type == "users":
-        # user_id (str), gender (str), birthdate (u64), registered_at (u64)
-        user_id, offset = read_string(data, offset)
-        _gender, offset = read_string(data, offset)
-        birthdate_iso, offset = read_date_as_iso(data, offset)
-        _registered_at_iso, offset = read_datetime_as_iso(data, offset)
-        item['user_id'] = int(user_id)
+        # user_id (u6ç32), gender (str), birthdate (u64), registered_at (u64)
+        user_id, offset = read_uint32(data, offset)
+        _gender, offset = read_bool(data, offset)
+        birthdate_iso, offset = read_uint32(data, offset)
+        _registered_at_iso, offset = read_uint32(data, offset)
+        item['user_id'] = user_id
         item['birthdate'] = birthdate_iso
         
     elif entity_type == "stores":

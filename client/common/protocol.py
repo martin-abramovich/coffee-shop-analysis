@@ -1,3 +1,4 @@
+import calendar
 import csv
 from datetime import datetime, date
 
@@ -118,27 +119,27 @@ def encode_int(i: int) -> bytes:
         i = 0
     return i.to_bytes(4, byteorder='big', signed=False)
 
-def encode_datetime(dt: datetime) -> bytes:
-    """Codifica datetime como timestamp (8 bytes)"""
-    try:
-        timestamp = int(dt.timestamp())
-        # Manejar timestamps negativos (fechas antes de 1970)
-        if timestamp < 0:
-            # Para fechas muy antiguas, usar una fecha mínima válida
-            timestamp = 0
-        return timestamp.to_bytes(8, byteorder='big', signed=False)
-    except (ValueError, OSError, OverflowError):
-        # Si hay error, usar timestamp 0
-        return (0).to_bytes(8, byteorder='big', signed=False)
+# def encode_datetime(dt: datetime) -> bytes:
+#     """Codifica datetime como timestamp (8 bytes)"""
+#     try:
+#         timestamp = int(dt.timestamp())
+#         # Manejar timestamps negativos (fechas antes de 1970)
+#         if timestamp < 0:
+#             # Para fechas muy antiguas, usar una fecha mínima válida
+#             timestamp = 0
+#         return timestamp.to_bytes(8, byteorder='big', signed=False)
+#     except (ValueError, OSError, OverflowError):
+#         # Si hay error, usar timestamp 0
+#         return (0).to_bytes(8, byteorder='big', signed=False)
 
-def encode_date(d: date) -> bytes:
-    """Codifica date como timestamp (8 bytes)"""
-    try:
-        dt = datetime.combine(d, datetime.min.time())
-        return encode_datetime(dt)
-    except (ValueError, OSError, OverflowError):
-        # Si hay error, usar timestamp 0
-        return (0).to_bytes(8, byteorder='big', signed=False)
+# def encode_date(d: date) -> bytes:
+#     """Codifica date como timestamp (8 bytes)"""
+#     try:
+#         dt = datetime.combine(d, datetime.min.time())
+#         return encode_datetime(dt)
+#     except (ValueError, OSError, OverflowError):
+#         # Si hay error, usar timestamp 0
+#         return (0).to_bytes(8, byteorder='big', signed=False)
 
 def encode_bool(b: bool) -> bytes:
     """Codifica bool como 1 byte"""
@@ -171,6 +172,25 @@ def encode_datetime_str(datetime_str: str) -> bytes:
         except Exception:
             return (0).to_bytes(8, 'big', signed=False)
 
+def encode_date(s) -> bytes:
+    """Parse YYYY-MM-DD → epoch (int) sin usar datetime, rapidísimo."""
+    y = int(s[0:4])
+    m = int(s[5:7])
+    d = int(s[8:10])
+    return encode_int(calendar.timegm((y, m, d, 0, 0, 0)))
+
+def encode_datetime(s) -> bytes:
+    """Parse YYYY-MM-DD HH:MM:SS → epoch sin datetime.strptime (10x más rápido)."""
+    y = int(s[0:4])
+    m = int(s[5:7])
+    d = int(s[8:10])
+    H = int(s[11:13])
+    M = int(s[14:16])
+    S = int(s[17:19])
+    #tiene sentido usar int32 porque tenemos hasta 2025, 
+    # si estamos en 2050 esto no funciona
+    return encode_int(calendar.timegm((y, m, d, H, M, S)))
+
 def encode_transaction(row: list) -> bytes:
     idx = TRANSACTION_INDEX
     data = b''
@@ -200,12 +220,14 @@ def encode_transaction_item(row: list) -> bytes:
 
 def encode_user(row: list) -> bytes:
     idx = USER_INDEX
-    data = b''
-    data += encode_string(row[idx['user_id']])
-    data += encode_string(row[idx['gender']])
-    data += encode_date_str(row[idx['birthdate']])
-    data += encode_datetime_str(row[idx['registered_at']])
-    return data
+    
+    b = bytearray()
+    b.extend(encode_int(int(row[idx['user_id']])))
+    b.append(1 if row[1] == "male" else 0)
+    b.extend(encode_date(row[idx['birthdate']]))
+    b.extend(encode_datetime(row[idx['registered_at']]))
+    
+    return b
 
 
 def encode_store(row: list) -> bytes:

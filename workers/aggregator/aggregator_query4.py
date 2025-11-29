@@ -40,6 +40,22 @@ STORES_EXCHANGE = "stores_raw"
 STORES_ROUTING_KEY = "q4"
 USERS_QUEUE = "users_raw"
 
+def u64_to_date(ts: int) -> str:
+    days = ts // 86400  # días desde 1970-01-01
+
+    # Algoritmo de conversión de días a fecha (Hinnant)
+    z = days + 719468
+    era = (z >= 0) and z // 146097 or -((-z - 1) // 146097) - 1
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    y = yoe + era * 400
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    d = doy - (153 * mp + 2) // 5 + 1
+    m = mp + 3 if mp < 10 else mp - 9
+    y += (m <= 2)
+
+    return f"{y:04d}-{m:02d}-{d:02d}"
 
 def canonicalize_id(value):
     """Normaliza IDs: si vienen como "123.0" convertir a "123"; sino, devolver strip()."""
@@ -106,26 +122,18 @@ class AggregatorQuery4:
         new_users = {}
         
         for row in rows:
-            user_id = row.get('user_id')
-            birthdate = row.get('birthdate')
+            user_id = int(row.get('user_id'))
+            birthdate = int(row.get('birthdate'))
             
             # Aceptar birthdate vacío como "sin fecha" y no indexarlo
             if not user_id:
                 continue
             if birthdate is None:
                 continue
-            normalized_user_id = int(canonicalize_id(user_id))
-            normalized_birthdate = birthdate.strip()
-            if normalized_birthdate == "":
-                # sin fecha
-                continue
-            # Validar formato simple YYYY-MM-DD
-            is_valid_format = bool(re.match(r"^\d{4}-\d{2}-\d{2}$", normalized_birthdate))
-            if not is_valid_format:
-                continue
-            if normalized_user_id:
-                session_data['users'][normalized_user_id] = normalized_birthdate
-                new_users[normalized_user_id] = normalized_birthdate
+            
+            if user_id:
+                session_data['users'][user_id] = birthdate
+                new_users[user_id] = birthdate
         
         return new_users
     
@@ -196,7 +204,7 @@ class AggregatorQuery4:
                 continue
             
             # JOIN con users: obtener birthdate de esta sesión
-            birthdate = session_data['users'].get(user_id)
+            birthdate = u64_to_date(session_data['users'].get(user_id))
             if not birthdate:
                 missing_users.add(user_id)
                 continue
