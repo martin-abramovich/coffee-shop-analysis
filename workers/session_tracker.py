@@ -100,20 +100,27 @@ class SessionTracker:
 
         return False
     
-    # def get_single_session_snapshot(self, session_id):
-    #     """Retorna el estado limpio (sin locks) de UNA sesión específica."""
-    #     if session_id not in self.sessions:
-    #         return None
+    def count_batches(self, session_id: str, entity_type: str) -> int:
+        """
+        Devuelve la cantidad TOTAL de batch_ids recibidos para una sesión y tipo.
+        Cuenta todos los rangos acumulados.
+        """
+        if session_id not in self.sessions:
+            return 0
+
+        session_info = self.sessions[session_id]
+
+        with session_info["_lock"]:
+            tipo_info = session_info.get(entity_type)
+            if not tipo_info:
+                return 0
             
-    #     session_info = self.sessions[session_id]
-    #     snapshot = {}
-        
-    #     # Usamos el lock de la sesión para leer consistentemente
-    #     with session_info["_lock"]:
-    #         for key, val in session_info.items():
-    #             if key == "_lock": continue
-    #             snapshot[key] = val
-    #     return snapshot
+            ranges = tipo_info.get("ranges", [])
+            total = 0
+            for start, end in ranges:
+                total += (end - start + 1)
+
+            return total
     
     def load_state_snapshot(self, snapshot):
         """Reconstruye el estado desde un snapshot."""

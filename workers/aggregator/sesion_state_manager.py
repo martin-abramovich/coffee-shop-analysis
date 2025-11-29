@@ -4,6 +4,7 @@ import os
 import logging
 import glob
 import shutil
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,11 @@ def merge_sum_dicts(base_data, new_chunk):
 def merge_replace_dicts(base_data, new_chunk):
     """Función de fusión para tipos de reemplazo/actualización (ej: 'users', 'stores'). Las nuevas claves reemplazan o se añaden."""
     base_data.update(new_chunk)
+    return base_data
+
+def merge_list(base_data, new_chunk):
+    """Fusión de lista: más eficiente en memoria."""
+    base_data.extend(new_chunk)
     return base_data
 
 # --- Configuración Base para Inicialización ---
@@ -196,7 +202,7 @@ class SessionStateManager:
         
         return aggregator_map, tracker_map
 
-    def __load_optimized_directory(self, dir_path, type):
+    def __load_optimized_directory(self, dir_path, data_type):
         """
         Lee una estructura de carpeta optimizada:
         - info.pkl: Fuente de la verdad (Metadata + Tracker).
@@ -221,7 +227,7 @@ class SessionStateManager:
             return None, None
 
         # 3. Leer DATA con validación de tamaño
-        BaseClass, merge_func = self.data_type_configs[type]
+        BaseClass, merge_func = self.data_type_configs[data_type]
         full_aggregator_data = BaseClass()
         
         if os.path.exists(data_path):
@@ -241,14 +247,15 @@ class SessionStateManager:
                         try:
                             chunk = pickle.load(f)
                             
-                            if isinstance(chunk, dict):
+                            if isinstance(chunk, dict) or isinstance(chunk, list):
                                 full_aggregator_data = merge_func(full_aggregator_data, chunk)
                             else:
-                                logger.warning(f"Chunk inesperado encontrado en {data_path}. Esperado dict, encontrado {type(chunk)}.")    
+                                logger.warning(f"Chunk inesperado encontrado en {data_path}. Esperado dict or list, encontrado {type(chunk)}.")    
                                 
                         except EOFError:
                             break
             except Exception as e:
                 logger.error(f"Error leyendo flujo de datos en {data_path}: {e}")
+                logger.error(traceback.format_exc())
                 
         return full_aggregator_data, tracker_data

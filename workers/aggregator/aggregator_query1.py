@@ -4,10 +4,11 @@ import os
 import signal
 import threading
 from datetime import datetime
+import traceback
 
 from common.logger import init_log
 from workers.session_tracker import SessionTracker
-from workers.aggregator.sesion_state_manager import SessionStateManager
+from workers.aggregator.sesion_state_manager import SessionStateManager, merge_list
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
@@ -20,6 +21,10 @@ from workers.utils import deserialize_message, serialize_message
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 
+DEFAULT_DATA_CONFIGS_STATE_MANAGER = {
+    "transactions":        (list, merge_list),
+}
+
 INPUT_EXCHANGE = "transactions_amount"    # exchange del filtro por amount
 INPUT_ROUTING_KEY = "amount"              # routing key del filtro por amount
 OUTPUT_EXCHANGE = "results_query1"        # exchange de salida para resultados finales
@@ -29,10 +34,10 @@ ROUTING_KEY = "query1_results"            # routing para resultados
 class AggregatorQuery1:
     def __init__(self):
         # Acumulador de transacciones válidas por sesión
-        self.session_data = {}  # {session_id: {'transactions': [], 'total_received': 0, 'results_sent': False}}
+        self.session_data = {}  # {session_id: {'transactions': [], 'total_received': 0}}
         self.total_received = 0
         self.session_tracker = SessionTracker(["transactions"])
-        self.state_manager = SessionStateManager()
+        self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER)
         
         self.shutdown_event = threading.Event()
         self.amount_trans_queue = None
@@ -43,9 +48,10 @@ class AggregatorQuery1:
         """Acumula transacciones que pasaron todos los filtros para una sesión específica."""
         
         if session_id not in self.session_data:
-            self.session_data[session_id] = {'transactions': []}
+            self.session_data[session_id] = {'transactions': [], 'total_received': 0}
         
         session_info = self.session_data[session_id]
+        new_transactions = []
         
         for row in rows:
             # Extraer los campos requeridos para Query 1: transaction_id y final_amount
@@ -56,6 +62,7 @@ class AggregatorQuery1:
             
             if transaction_record.get('transaction_id') and transaction_record.get('final_amount') is not None:
                 session_info['transactions'].append(transaction_record)
+                new_transactions.append(transaction_record)
         
         session_info['total_received'] += len(rows)
         self.total_received += len(rows)
@@ -65,6 +72,7 @@ class AggregatorQuery1:
             total_accumulated = sum(len(data['transactions']) for data in self.session_data.values())
             logger.debug(f"[AggregatorQuery1] Total acumulado: {total_accumulated}/{self.total_received} (sesiones: {len(self.session_data)})")
     
+        return new_transactions
     
     def __generate_final_results(self, session_id):
         """Genera los resultados finales para Query 1 de una sesión específica."""
@@ -158,46 +166,54 @@ class AggregatorQuery1:
         #data en disco
         self.state_manager.delete_session(session_id)
     
-    def __save_session(self, session_id):
+    def __save_session_add(self, session_id, new_transactions):
         tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, "transactions")
-        session_snap = self.session_data.get(session_id, {})
         
-        self.state_manager.save_type_state(session_id, "transactions", session_snap, tracker_snap)
+        self.state_manager.save_type_state_add(session_id, "transactions", new_transactions, tracker_snap)
         
         
         
     def __on_message(self, body):
-        header, rows = deserialize_message(body)
+        try:
+            header, rows = deserialize_message(body)
 
-        session_id = header.get("session_id", "unknown")
-        batch_id = int(header.get("batch_id"))
-        is_eos = str(header.get("is_eos", "")).lower() == "true"
+            session_id = header.get("session_id", "unknown")
+            batch_id = int(header.get("batch_id"))
+            is_eos = str(header.get("is_eos", "")).lower() == "true"
+            new_transactions = []
+            
+            if self.session_tracker.previus_update(session_id, "transactions", batch_id):
+                return
 
-        if self.session_tracker.previus_update(session_id, "transactions", batch_id):
-            return
-
-        if rows:
-            self.__accumulate_transactions(rows, session_id)
-       
-        if self.session_tracker.update(session_id, "transactions",batch_id, is_eos): 
-                self.__send_results(session_id)
+            if rows:
+                new_transactions = self.__accumulate_transactions(rows, session_id)
+            
+            if self.session_tracker.update(session_id, "transactions",batch_id, is_eos): 
+                    self.__send_results(session_id)
+                    
+                    self.__del_session(session_id)
                 
-                self.__del_session(session_id)
-          
-        else: 
-            self.__save_session(session_id)
-
+            else: 
+                self.__save_session_add(session_id, new_transactions)
+        
+        except Exception as e: 
+            logger.error(f"[AggregatorQuery1] Error procesando el mensaje de transactions: {e}")
+            logger.error(traceback.format_exc())
+            
     def __load_sessions_data(self, data):
         for session_id, data in data.items():
-            self.session_data[session_id] = data["transactions"]
+            self.session_data[session_id] = {
+                'transactions': data["transactions"], 
+                'total_received': self.session_tracker.count_batches(session_id, "transactions")
+                }
     
     def __load_sessions(self):
         logger.info("[*] Intentando recuperar estado previo...")
         saved_data, saved_tracker = self.state_manager.load_all_sessions()
         
         if saved_data and saved_tracker:
-            self.__load_sessions_data(saved_data)
             self.session_tracker.load_state_snapshot(saved_tracker)
+            self.__load_sessions_data(saved_data)
             logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
         else:
             logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
