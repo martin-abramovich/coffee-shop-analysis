@@ -176,11 +176,11 @@ def parse_item(data, offset, entity_type):
     elif entity_type == "transaction_items":
         # transaction_id (str), item_id (str), quantity (u32), unit_price (f32), subtotal (f32), created_at (u64)
         trans_id, offset = read_string(data, offset)
-        item_id, offset = read_string(data, offset)
-        quantity, offset = read_int(data, offset)
+        item_id, offset = read_uint32(data, offset)
+        quantity, offset = read_uint32(data, offset)
         _unit_price, offset = read_float(data, offset)
         subtotal, offset = read_float(data, offset)
-        created_at_iso, offset = read_datetime_as_iso(data, offset)
+        created_at_iso, offset = read_uint32(data, offset)
         item['transaction_id'] = trans_id
         item['item_id'] = item_id
         item['quantity'] = quantity

@@ -7,6 +7,7 @@ from collections import defaultdict
 import traceback
 
 from common.logger import init_log
+from common.utils import yyyymm_int_to_str
 from workers.aggregator.sesion_state_manager import SessionStateManager
 from workers.session_tracker import SessionTracker
 
@@ -80,7 +81,7 @@ class AggregatorQuery2:
         session_data = self.__get_session_data(session_id)
         
         for row in rows:
-            month = row.get('month')
+            month = int(row.get('month'))
             item_id = row.get('item_id')  # CAMBIO: usar item_id en lugar de item_name
             total_quantity = row.get('total_quantity', 0)
             total_subtotal = row.get('total_subtotal', 0.0)
@@ -152,14 +153,14 @@ class AggregatorQuery2:
             most_profitable = max(products, key=lambda x: x['total_subtotal'])
             
             final_results.append({
-                'year_month_created_at': month,
+                'year_month_created_at': yyyymm_int_to_str(month),
                 'item_name': most_sold['item_name'],
                 'sellings_qty': most_sold['total_quantity'],
                 'profit_sum': '',
                 'metric_type': 'most_sold'
             })
             final_results.append({
-                'year_month_created_at': month,
+                'year_month_created_at': yyyymm_int_to_str(month),
                 'item_name': most_profitable['item_name'],
                 'sellings_qty': '',
                 'profit_sum': most_profitable['total_subtotal'],

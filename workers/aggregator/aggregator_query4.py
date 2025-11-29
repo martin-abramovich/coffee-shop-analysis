@@ -40,7 +40,7 @@ STORES_EXCHANGE = "stores_raw"
 STORES_ROUTING_KEY = "q4"
 USERS_QUEUE = "users_raw"
 
-def u64_to_date(ts: int) -> str:
+def int_to_date(ts: int) -> str:
     days = ts // 86400  # días desde 1970-01-01
 
     # Algoritmo de conversión de días a fecha (Hinnant)
@@ -204,7 +204,7 @@ class AggregatorQuery4:
                 continue
             
             # JOIN con users: obtener birthdate de esta sesión
-            birthdate = u64_to_date(session_data['users'].get(user_id))
+            birthdate = int_to_date(session_data['users'].get(user_id))
             if not birthdate:
                 missing_users.add(user_id)
                 continue

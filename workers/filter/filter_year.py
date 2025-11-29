@@ -36,6 +36,23 @@ WORKER_ID = int(os.environ.get('WORKER_ID'))
 #     }
 # }
 
+def year_from_timestamp(ts: int) -> int:
+    """
+    Devuelve el año UTC a partir de un timestamp UNIX (int32 o int64)
+    sin usar datetime. Ultra rápido.
+    """
+    # días desde epoch
+    days = ts // 86400  
+
+    # algoritmo de Howard Hinnant: date::year_month_day
+    z = days + 719468
+    era = (z >= 0)
+    era = (z // 146097) if era else ((z - 146096) // 146097)
+    doe = z - era * 146097                      # día dentro de la era
+    yoe = (doe - doe//1460 + doe//36524 - doe//146096) // 365
+    y = yoe + era * 400
+    return y + 1 
+
 def filter_by_year(rows):
     """Mantiene filas con created_at entre 2024 y 2025 (inclusive)."""
     filtered = []
@@ -50,8 +67,25 @@ def filter_by_year(rows):
                 filtered.append(r)
         except Exception:
             continue
+        
     return filtered
 
+
+def item_filter_by_year(rows):
+    """Mantiene filas con created_at entre 2024 y 2025 (inclusive)."""
+    filtered = []
+    for r in rows:
+        created = r.get("created_at")
+        if not created:
+            continue
+        try:
+            year = year_from_timestamp(int(created))
+            if 2024 <= year <= 2025:
+                filtered.append(r)
+        except Exception:
+            continue
+        
+    return filtered
 
 def on_trans_message(body): 
     try:
@@ -75,7 +109,7 @@ def on_trans_item_message(body):
         if (header.get("is_eos") == "true"): 
             print("SE RECIBIO EOS") 
 
-        filtered = filter_by_year(rows)    
+        filtered = item_filter_by_year(rows)    
         
         out_msg = serialize_message(filtered, header)
         filter_trans_item_queue.send(out_msg)

@@ -193,7 +193,7 @@ def encode_datetime(s) -> bytes:
 
 def encode_transaction(row: list) -> bytes:
     idx = TRANSACTION_INDEX
-    data = b''
+    
     data += encode_string(row[idx['transaction_id']])
     data += encode_string(row[idx['store_id']])
     data += encode_string(row[idx['payment_method_id']])
@@ -208,14 +208,16 @@ def encode_transaction(row: list) -> bytes:
 
 def encode_transaction_item(row: list) -> bytes:
     idx = TRANSACTION_ITEM_INDEX
-    data = b''
-    data += encode_string(row[idx['transaction_id']])
-    data += encode_string(row[idx['item_id']])
-    data += encode_int(int(row[idx['quantity']]))
-    data += encode_float(float(row[idx['unit_price']]))
-    data += encode_float(float(row[idx['subtotal']]))
-    data += encode_datetime_str(row[idx['created_at']])
-    return data
+   
+    b = bytearray()
+    b.extend(encode_string(row[idx['transaction_id']]))
+    b.extend(encode_int(int(row[idx['item_id']])))
+    b.extend(encode_int(int(row[idx['quantity']])))
+    b.extend(encode_float(float(row[idx['unit_price']])))
+    b.extend(encode_float(float(row[idx['subtotal']])))
+    b.extend(encode_datetime(row[idx['created_at']]))
+    
+    return b
 
 
 def encode_user(row: list) -> bytes:
