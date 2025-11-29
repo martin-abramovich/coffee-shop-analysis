@@ -10,7 +10,7 @@ from datetime import datetime
 import traceback
 
 from common.logger import init_log
-from workers.aggregator.sesion_state_manager import SessionStateManager
+from workers.aggregator.sesion_state_manager import SessionStateManager, merge_replace_dicts, merge_sum_dicts
 from workers.session_tracker import SessionTracker
 
 # Añadir paths al PYTHONPATH
@@ -24,6 +24,11 @@ from workers.utils import deserialize_message, serialize_message
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 
+DEFAULT_DATA_CONFIGS_STATE_MANAGER = {
+    "transactions": (lambda: defaultdict(int), merge_sum_dicts),
+    "users":        (dict, merge_replace_dicts),
+}
+
 INPUT_EXCHANGE = "transactions_query4"    # exchange del group_by query 4
 INPUT_ROUTING_KEY = "query4"              # routing key del group_by
 OUTPUT_EXCHANGE = "results_query4"        # exchange de salida para resultados finales
@@ -34,6 +39,7 @@ ROUTING_KEY = "query4_results"            # routing para resultados
 STORES_EXCHANGE = "stores_raw"
 STORES_ROUTING_KEY = "q4"
 USERS_QUEUE = "users_raw"
+
 
 def canonicalize_id(value):
     """Normaliza IDs: si vienen como "123.0" convertir a "123"; sino, devolver strip()."""
@@ -55,7 +61,7 @@ class AggregatorQuery4:
         
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(["transactions", "stores", "users"])
-        self.state_manager = SessionStateManager()
+        self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER)
         
         #in 
         self.transactions_queue = None
@@ -67,10 +73,7 @@ class AggregatorQuery4:
         """Inicializa datos para una nueva sesión"""
         if session_id not in self.session_data:
             self.session_data[session_id] = {
-                "transactions":{
-                    'store_user_transactions': defaultdict(int),
-                    'batches_received': 0,
-                },
+                "transactions":defaultdict(int),
                 # Diccionarios de JOIN
                 'stores': {},  # store_id -> store_name
                 'users': {},  # user_id -> birthdate
@@ -129,13 +132,8 @@ class AggregatorQuery4:
     def __accumulate_transactions(self, rows, session_id):
         """Acumula conteos de transacciones de group_by_query4 para una sesión específica."""
         session_data = self.__get_session_data(session_id)
-        
-        store_user_transactions = session_data["transactions"]["store_user_transactions"]
-        session_data["transactions"]['batches_received'] += 1
-        batches_received = session_data["transactions"]['batches_received']
-        
-        processed_count = 0
-        
+        new_transactions = defaultdict(int)
+
         for row in rows:
             store_id = row.get('store_id')
             user_id = row.get('user_id')
@@ -161,23 +159,19 @@ class AggregatorQuery4:
             
             
             # Acumular conteo de transacciones para esta sesión
-            store_user_transactions[key] += transaction_count
-            processed_count += 1
+            session_data["transactions"][key] += transaction_count
+            new_transactions[key] += transaction_count
         
-                
-        if batches_received % 10000 == 0 or batches_received <= 5:
-            logger.info(f"[AggregatorQuery4] Sesión {session_id}: Batch {batches_received}: {processed_count}/{len(rows)} procesados; total combinaciones={len(store_user_transactions)}")
+        return new_transactions
         
           
     def __generate_final_results(self, session_id):
         """Genera los resultados finales para Query 4 con doble JOIN y TOP 3 para una sesión específica."""
         session_data = self.__get_session_data(session_id)
+                   
+        logger.info(f"[AggregatorQuery4] Generando resultados para sesión {session_id}... combinaciones={len( session_data['transactions'])}, stores={len(session_data['stores'])}, users={len(session_data['users'])}")
         
-        store_user_transactions = session_data["transactions"]["store_user_transactions"]
-           
-        logger.info(f"[AggregatorQuery4] Generando resultados para sesión {session_id}... combinaciones={len(store_user_transactions)}, stores={len(session_data['stores'])}, users={len(session_data['users'])}")
-        
-        if not store_user_transactions:
+        if not session_data["transactions"]:
             logger.warning(f"[AggregatorQuery4] No hay datos para procesar en sesión {session_id}")
             return []
         
@@ -194,7 +188,7 @@ class AggregatorQuery4:
         missing_stores = set()
         missing_users = set()
         
-        for (store_id, user_id), transaction_count in store_user_transactions.items():
+        for (store_id, user_id), transaction_count in  session_data["transactions"].items():
             # JOIN con stores: obtener store_name de esta sesión
             store_name = session_data['stores'].get(store_id)
             if not store_name:
@@ -313,24 +307,29 @@ class AggregatorQuery4:
         
     def __on_transactions_message(self, body):
         """Maneja mensajes de conteos de transacciones de group_by_query4."""        
-        
-        header, rows = deserialize_message(body)
-        session_id = header.get("session_id", "unknown")
-        batch_id = int(header.get("batch_id"))
-        is_eos = header.get("is_eos") == "true"
-        
-        if is_eos:
-            logger.info(f"Se recibió EOS en transactions para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
-        
-        if rows:
-            self.__accumulate_transactions(rows, session_id)
-        
-        if self.session_tracker.update(session_id, "transactions", batch_id, is_eos):
-            self.__generate_and_send_results(session_id)
+        try:
+            header, rows = deserialize_message(body)
+            session_id = header.get("session_id", "unknown")
+            batch_id = int(header.get("batch_id"))
+            is_eos = header.get("is_eos") == "true"
+            new_transactions = {}
             
-            self.__del_session(session_id)
-        else: 
-            self.__save_session_type(session_id, "transactions")
+            if is_eos:
+                logger.info(f"Se recibió EOS en transactions para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
+            
+            if rows:
+                new_transactions = self.__accumulate_transactions(rows, session_id)
+            
+            if self.session_tracker.update(session_id, "transactions", batch_id, is_eos):
+                self.__generate_and_send_results(session_id)
+                
+                self.__del_session(session_id)
+            else: 
+                self.__save_session_type_add(session_id, "transactions", new_transactions)
+            
+        except Exception as e: 
+            logger.error(f"[AggregatorQuery4] Error procesando el mensaje de transactions: {e}")
+            logger.error(traceback.format_exc())
 
     def __on_stores_message(self, body):
         """Maneja mensajes de stores para el JOIN."""
@@ -375,7 +374,6 @@ class AggregatorQuery4:
                 
             else:
                 self.__save_session_type_add(session_id, "users", new_users)
-                pass 
             
         except Exception as e: 
             logger.error(f"[AggregatorQuery4] Error procesando el mensaje de users: {e}")

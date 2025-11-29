@@ -43,7 +43,7 @@ class AggregatorQuery1:
         """Acumula transacciones que pasaron todos los filtros para una sesión específica."""
         
         if session_id not in self.session_data:
-            self.session_data[session_id] = {'transactions': [], 'total_received': 0, 'results_sent': False}
+            self.session_data[session_id] = {'transactions': []}
         
         session_info = self.session_data[session_id]
         

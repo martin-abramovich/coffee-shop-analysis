@@ -1,3 +1,4 @@
+from collections import defaultdict
 import pickle
 import os
 import logging
@@ -11,11 +12,38 @@ INDEX_SAVE = {
     "tracker": 1,
 }
 
+def merge_sum_dicts(base_data, new_chunk):
+    """Función de fusión para tipos acumulativos (ej: 'transactions'). Suma los valores de las claves existentes."""
+    for key, value in new_chunk.items():
+        base_data[key] += value
+    return base_data
+
+def merge_replace_dicts(base_data, new_chunk):
+    """Función de fusión para tipos de reemplazo/actualización (ej: 'users', 'stores'). Las nuevas claves reemplazan o se añaden."""
+    base_data.update(new_chunk)
+    return base_data
+
+# --- Configuración Base para Inicialización ---
+
+
 class SessionStateManager:
-    def __init__(self, base_dir="./state"):
+    def __init__(self, data_type_configs = None, base_dir="./state"):
+        """
+        Inicializa State Manager, para la persisitencia de los datos.\n 
+        - data_type_configs: es un diccionario con la configuracion para 
+         el merge a la hora de load. Ej: \n
+         DEFAULT_DATA_CONFIGS = {
+            Tipo:           (Elemento Base, Función de Fusión)
+            "transactions": (lambda: defaultdict(int), merge_sum_dicts),
+            "users":        (dict, merge_replace_dicts),
+            }
+        """
+        
         self.base_dir = base_dir
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
+        
+        self.data_type_configs = data_type_configs
             
     def save_type_state(self, session_id, data_type, aggregator_data, tracker_data):
         """
@@ -112,53 +140,7 @@ class SessionStateManager:
         except OSError as e:
             logger.warning(f"No se pudo borrar directorio de sesión {session_id}: {e}")
     
-    # def load_all_sessions(self):
-    #     """
-    #     Recorre carpetas y archivos para reconstruir el estado global.
-    #     Retorna: (aggregator_map, tracker_map)
-    #     Estructura aggregator_map: { session_id: { 'transactions': [...], 'stores': [...] } }
-    #     """
-    #     idx = INDEX_SAVE
-    #     aggregator_map = {}
-    #     tracker_map = {}
-        
-    #     if not os.path.exists(self.base_dir):
-    #         return aggregator_map, tracker_map
-
-    #     # Listar todas las carpetas de sesiones
-    #     session_dirs = [d for d in os.listdir(self.base_dir) if os.path.isdir(os.path.join(self.base_dir, d))]
-        
-    #     logger.info(f"Recuperando {len(session_dirs)} sesiones del disco...")
-
-    #     for s_id in session_dirs:
-    #         s_path = os.path.join(self.base_dir, s_id)
-            
-    #         # Inicializar diccionarios para esta sesión
-    #         if s_id not in aggregator_map: aggregator_map[s_id] = {}
-    #         if s_id not in tracker_map: tracker_map[s_id] = {}
-
-    #         # Leer cada archivo de tipo dentro de la carpeta de sesión
-    #         for file in os.listdir(s_path):
-    #             if file.endswith(".pkl") and not file.endswith(".tmp"):
-    #                 try:
-    #                     filepath = os.path.join(s_path, file)
-    #                     with open(filepath, 'rb') as f:
-    #                         state = pickle.load(f)
-                        
-    #                     data_type_key = os.path.splitext(file)[0]
-                        
-    #                     # Reconstruir memoria
-    #                     # aggregator_map[session][tipo] = datos
-    #                     aggregator_map[s_id][data_type_key] = state[idx['data']] 
-                        
-    #                     # tracker_map[session][tipo] = info_tracker
-    #                     tracker_map[s_id][data_type_key] = state[idx['tracker']]
-                        
-    #                 except Exception as e:
-    #                     logger.error(f"Archivo corrupto {filepath}: {e}")
-        
-    #     return aggregator_map, tracker_map
-
+  
     def load_all_sessions(self):
         """
         Recorre carpetas y archivos para reconstruir el estado global.
@@ -191,7 +173,7 @@ class SessionStateManager:
                 if os.path.isdir(item_path):
                     data_type = item_name # El nombre de la carpeta es el tipo de dato
                     try:
-                        agg_data, track_data = self.__load_optimized_directory(item_path)
+                        agg_data, track_data = self.__load_optimized_directory(item_path, data_type)
                         if agg_data is not None:
                             aggregator_map[s_id][data_type] = agg_data
                             tracker_map[s_id][data_type] = track_data
@@ -214,7 +196,7 @@ class SessionStateManager:
         
         return aggregator_map, tracker_map
 
-    def __load_optimized_directory(self, dir_path):
+    def __load_optimized_directory(self, dir_path, type):
         """
         Lee una estructura de carpeta optimizada:
         - info.pkl: Fuente de la verdad (Metadata + Tracker).
@@ -239,7 +221,8 @@ class SessionStateManager:
             return None, None
 
         # 3. Leer DATA con validación de tamaño
-        full_aggregator_data = {}
+        BaseClass, merge_func = self.data_type_configs[type]
+        full_aggregator_data = BaseClass()
         
         if os.path.exists(data_path):
             current_size = os.path.getsize(data_path)
@@ -259,14 +242,13 @@ class SessionStateManager:
                             chunk = pickle.load(f)
                             
                             if isinstance(chunk, dict):
-                                # El método update() fusiona el nuevo chunk en el diccionario final.
-                                full_aggregator_data.update(chunk)
+                                full_aggregator_data = merge_func(full_aggregator_data, chunk)
                             else:
-                                # Manejo de errores o chunks inesperados
                                 logger.warning(f"Chunk inesperado encontrado en {data_path}. Esperado dict, encontrado {type(chunk)}.")    
                                 
                         except EOFError:
                             break
             except Exception as e:
                 logger.error(f"Error leyendo flujo de datos en {data_path}: {e}")
+                
         return full_aggregator_data, tracker_data
