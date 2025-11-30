@@ -208,7 +208,7 @@ class AggregatorQuery3:
 
         session_id = header.get("session_id", "unknown")
         bach_id = int(header.get("batch_id"))
-        is_eos = header.get("is_eos") == "true"
+        is_eos = header.get("is_eos")
 
         if is_eos:
             logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en TPV para sesión {session_id}, batch_id {bach_id}")
@@ -232,7 +232,7 @@ class AggregatorQuery3:
             return
         
         session_id = header.get("session_id", "unknown")
-        is_eos = header.get("is_eos") == "true"
+        is_eos = header.get("is_eos")
         bach_id = int(header.get("batch_id", -1))
 
         if is_eos:

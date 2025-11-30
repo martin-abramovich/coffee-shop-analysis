@@ -245,7 +245,7 @@ class AggregatorQuery2:
         
             session_id = header.get("session_id", "unknown")
             batch_id = int(header.get("batch_id"))
-            is_eos = header.get("is_eos") == "true"
+            is_eos = header.get("is_eos")
             
             if is_eos:
                 logger.info(f"Se recibió EOS en metrics para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
@@ -270,7 +270,7 @@ class AggregatorQuery2:
                 
             session_id = header.get("session_id", "unknown")
             batch_id = int(header.get("batch_id"))
-            is_eos = header.get("is_eos") == "true"
+            is_eos = header.get("is_eos")
             
             if batch_id == 0 or batch_id % 10000: 
                 logger.info(f"Se recibio batch {batch_id} para sesion {session_id}")

@@ -36,12 +36,11 @@ def group_by_month_and_item(rows):
         created_at = r.get("created_at")
         item_id = r.get("item_id") 
         
-        if not created_at or not item_id or not item_id.strip():
+        if not created_at or not item_id:
             continue
         
         try:
             month = timestamp_to_year_month_int(int(created_at))
-            normalized_item_id = item_id.strip()
             
             # Extraer quantity y subtotal de la fila
             quantity = r.get("quantity", 0)
@@ -54,7 +53,7 @@ def group_by_month_and_item(rows):
                 subtotal = float(subtotal) if subtotal else 0.0
             
             # Clave compuesta: (mes, item_id)
-            key = (month, normalized_item_id)
+            key = (month, item_id)
             
             # Acumular métricas
             metrics[key]['total_quantity'] += quantity
@@ -92,7 +91,6 @@ def on_message(body):
 
         
         batch_header = header.copy() if header else {}
-        batch_header["batch_size"] = str(len(batch_records))
         
         out_msg = serialize_message(batch_records, batch_header)
         mq_out.send(out_msg)

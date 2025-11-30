@@ -179,7 +179,7 @@ class AggregatorQuery1:
 
             session_id = header.get("session_id", "unknown")
             batch_id = int(header.get("batch_id"))
-            is_eos = str(header.get("is_eos", "")).lower() == "true"
+            is_eos = header.get("is_eos", "")
             new_transactions = []
             
             if self.session_tracker.previus_update(session_id, "transactions", batch_id):

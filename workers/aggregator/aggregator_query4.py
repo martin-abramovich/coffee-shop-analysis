@@ -304,7 +304,7 @@ class AggregatorQuery4:
             header, rows = deserialize_message(body)
             session_id = header.get("session_id", "unknown")
             batch_id = int(header.get("batch_id"))
-            is_eos = header.get("is_eos") == "true"
+            is_eos = header.get("is_eos")
             new_transactions = {}
             
             if is_eos:
@@ -330,7 +330,7 @@ class AggregatorQuery4:
         header, rows = deserialize_message(body)        
         session_id = header.get("session_id", "unknown")
         batch_id = int(header.get("batch_id"))
-        is_eos = header.get("is_eos") == "true"
+        is_eos = header.get("is_eos")
         
         if is_eos:
             logger.info(f"Se recibió EOS en stores para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
@@ -352,7 +352,7 @@ class AggregatorQuery4:
             header, rows = deserialize_message(body)       
             session_id = header.get("session_id", "unknown")
             batch_id = int(header.get("batch_id"))
-            is_eos = header.get("is_eos") == "true"
+            is_eos = header.get("is_eos")
             new_users = {}
             
             if is_eos: logger.info(f"Se recibió EOS en users para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")

@@ -5,6 +5,7 @@ import threading
 from collections import defaultdict
 from datetime import datetime
 import time
+import traceback
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -58,36 +59,40 @@ batches_sent = 0
 
 def on_message(body):
     global batches_sent
-    header, rows = deserialize_message(body)
-    
-    # Agrupar por (semestre, store_id) y calcular TPV
-    semester_store_metrics = group_by_semester_and_store(rows)
-    
-    batch_records = []
-    
-    for (semester, store_id), metrics in semester_store_metrics.items():
-        if metrics['total_payment_value'] > 0:
-            # Crear un registro único con las métricas de (semestre, store)
-            query3_record = {
-                'semester': semester,
-                'store_id': store_id,
-                'total_payment_value': metrics['total_payment_value']
-            }
-            batch_records.append(query3_record)
-            
-            
-    out_msg = serialize_message(batch_records, header)
-    group_by_queue.send(out_msg)
-    batches_sent += 1
-
-    
-    if batches_sent <= 3 or batches_sent % 10000 == 0:
-        total_in = len(rows)
-        unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
-        unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
+    try:
+        header, rows = deserialize_message(body)
         
-        print(f"[GroupByQuery3] batches_sent={batches_sent} in={total_in} created={len(semester_store_metrics)} semesters={unique_semesters} stores={unique_stores}")
+        # Agrupar por (semestre, store_id) y calcular TPV
+        semester_store_metrics = group_by_semester_and_store(rows)
+        
+        batch_records = []
+        
+        for (semester, store_id), metrics in semester_store_metrics.items():
+            if metrics['total_payment_value'] > 0:
+                # Crear un registro único con las métricas de (semestre, store)
+                query3_record = {
+                    'semester': semester,
+                    'store_id': store_id,
+                    'total_payment_value': metrics['total_payment_value']
+                }
+                batch_records.append(query3_record)
+                
+                
+        out_msg = serialize_message(batch_records, header)
+        group_by_queue.send(out_msg)
+        batches_sent += 1
 
+        
+        if batches_sent <= 3 or batches_sent % 10000 == 0:
+            total_in = len(rows)
+            unique_semesters = len(set(semester for semester, _ in semester_store_metrics.keys()))
+            unique_stores = len(set(store_id for _, store_id in semester_store_metrics.keys()))
+            
+            print(f"[GroupByQuery3] batches_sent={batches_sent} in={total_in} created={len(semester_store_metrics)} semesters={unique_semesters} stores={unique_stores}")
+    except Exception as e: 
+        print(f"[GroupByQuery3] Error procesando el mensaje de transactions: {e}")
+        print(traceback.format_exc())
+        
 if __name__ == "__main__":
     print(f"[GroupByQuery3] Iniciando worker {WORKER_ID}...")
     shutdown_event = threading.Event()
