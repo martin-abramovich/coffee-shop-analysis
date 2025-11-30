@@ -35,6 +35,33 @@ class SessionTracker:
             merged.append((new_start, new_end))
         return merged
 
+    def previus_update(self, session_id:str, entity_type:str, batch_id: int) -> bool:
+        """
+        Devuelve True si el batch_id ya fue procesado previamente.
+        No modifica el estado.
+        """
+        # Si la sesión no existe, seguro no se procesó
+        if session_id not in self.sessions:
+            return False
+
+        session_info = self.sessions[session_id]
+
+        # Si ese tipo aún no tiene registros → tampoco se procesó
+        if entity_type not in session_info:
+            return False
+
+        # Sección crítica por tipo
+        with session_info["_lock"]:
+            ranges = session_info[entity_type].get("ranges", [])
+            
+            for start, end in ranges:
+                if start <= batch_id <= end:
+                    return True
+
+        return False
+
+            
+         
     def update(self, session_id: str, entity_type: str, batch_id: int, is_eos: bool) -> bool:
         """
         Actualiza el estado de una sesión para un tipo específico.
@@ -72,3 +99,45 @@ class SessionTracker:
                 return True
 
         return False
+    
+    def count_batches(self, session_id: str, entity_type: str) -> int:
+        """
+        Devuelve la cantidad TOTAL de batch_ids recibidos para una sesión y tipo.
+        Cuenta todos los rangos acumulados.
+        """
+        if session_id not in self.sessions:
+            return 0
+
+        session_info = self.sessions[session_id]
+
+        with session_info["_lock"]:
+            tipo_info = session_info.get(entity_type)
+            if not tipo_info:
+                return 0
+            
+            ranges = tipo_info.get("ranges", [])
+            total = 0
+            for start, end in ranges:
+                total += (end - start + 1)
+
+            return total
+    
+    def load_state_snapshot(self, snapshot):
+        """Reconstruye el estado desde un snapshot."""
+        with self.global_lock:
+            self.sessions.clear()
+            for session_id, data in snapshot.items():
+                self.sessions[session_id] = data
+                self.sessions[session_id]["_lock"] = threading.Lock()
+    
+    def get_single_session_type_snapshot(self, session_id, entity_type):
+        """Retorna el estado del tracker SOLO para un tipo específico."""
+        if session_id not in self.sessions:
+            return {}
+            
+        session_info = self.sessions[session_id]
+        with session_info["_lock"]:
+            if entity_type in session_info:
+                # Retornamos copia del dict de ese tipo (ranges, expected, done)            
+                return session_info[entity_type].copy()
+        return {}

@@ -4,10 +4,12 @@ import signal
 import threading
 import time
 from datetime import datetime
+import traceback
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
+from common.utils import hour_from_timestamp
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 from common.healthcheck import start_healthcheck_server
@@ -58,7 +60,7 @@ def filter_by_hour(rows):
         if not created:
             continue
         try:
-            h = parse_hour(created)
+            h = hour_from_timestamp(int(created))
             if START_HOUR <= h <= END_HOUR:
                 filtered.append(r)
         except Exception:
@@ -67,16 +69,22 @@ def filter_by_hour(rows):
 
 
 def on_message(body):
-    header, rows = deserialize_message(body)
-    
-    if (header.get("is_eos") == "true"):
-        print("SE RECIBIO EOS con batch_id:", header.get("batch_id"))
+    try:
         
-    filtered = filter_by_hour(rows)
-    
-    out_msg = serialize_message(filtered, header)
+        header, rows = deserialize_message(body)
+        
+        if (header.get("is_eos") == "true"):
+            print("SE RECIBIO EOS con batch_id:", header.get("batch_id"))
+            
+        filtered = filter_by_hour(rows)
+        
+        out_msg = serialize_message(filtered, header)
 
-    hour_trans_exchange.send(out_msg)
+        hour_trans_exchange.send(out_msg)
+        
+    except Exception as e: 
+        print(f"[FilterHour] Error procesando el mensaje de transactions: {e}")
+        print(traceback.format_exc())
 
 if __name__ == "__main__":
     print(f"[FilterHour] Iniciando worker {WORKER_ID}...")

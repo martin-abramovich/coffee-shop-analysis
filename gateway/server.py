@@ -4,6 +4,7 @@ import sys
 import os
 import threading
 import time
+import traceback
 import uuid
 import json
 from datetime import datetime, timezone
@@ -155,17 +156,15 @@ def parse_item(data, offset, entity_type):
     item = {}
     
     if entity_type == "transactions":
-        # transaction_id (str), store_id (str), payment_method (str), voucher_id (str),
-        # user_id (str), original_amount (f32), discount_applied (f32), final_amount (f32), created_at (u64)
         trans_id, offset = read_string(data, offset)
-        store_id, offset = read_string(data, offset)
-        _payment_method, offset = read_string(data, offset)
-        _voucher_id, offset = read_string(data, offset)
-        user_id, offset = read_string(data, offset)
+        store_id, offset = read_uint32(data, offset)
+        _payment_method, offset = read_uint32(data, offset)
+        _voucher_id, offset = read_uint32(data, offset)
+        user_id, offset = read_uint32(data, offset)
         _original_amount, offset = read_float(data, offset)
         _discount_applied, offset = read_float(data, offset)
         final_amount, offset = read_float(data, offset)
-        created_at_iso, offset = read_datetime_as_iso(data, offset)
+        created_at_iso, offset = read_uint32(data, offset)
         # Conservar solo los campos necesarios para el reducer
         item['transaction_id'] = trans_id
         item['store_id'] = store_id
@@ -174,13 +173,12 @@ def parse_item(data, offset, entity_type):
         item['created_at'] = created_at_iso
         
     elif entity_type == "transaction_items":
-        # transaction_id (str), item_id (str), quantity (u32), unit_price (f32), subtotal (f32), created_at (u64)
         trans_id, offset = read_string(data, offset)
-        item_id, offset = read_string(data, offset)
-        quantity, offset = read_int(data, offset)
+        item_id, offset = read_uint32(data, offset)
+        quantity, offset = read_uint32(data, offset)
         _unit_price, offset = read_float(data, offset)
         subtotal, offset = read_float(data, offset)
-        created_at_iso, offset = read_datetime_as_iso(data, offset)
+        created_at_iso, offset = read_uint32(data, offset)
         item['transaction_id'] = trans_id
         item['item_id'] = item_id
         item['quantity'] = quantity
@@ -188,20 +186,18 @@ def parse_item(data, offset, entity_type):
         item['created_at'] = created_at_iso
         
     elif entity_type == "users":
-        # user_id (str), gender (str), birthdate (u64), registered_at (u64)
-        user_id, offset = read_string(data, offset)
-        _gender, offset = read_string(data, offset)
-        birthdate_iso, offset = read_date_as_iso(data, offset)
-        _registered_at_iso, offset = read_datetime_as_iso(data, offset)
+        user_id, offset = read_uint32(data, offset)
+        _gender, offset = read_bool(data, offset)
+        birthdate_iso, offset = read_uint32(data, offset)
+        _registered_at_iso, offset = read_uint32(data, offset)
         item['user_id'] = user_id
         item['birthdate'] = birthdate_iso
         
     elif entity_type == "stores":
-        # store_id (str), store_name (str), street (str), postal_code (str), city (str), state (str), latitude (f32), longitude (f32)
-        store_id, offset = read_string(data, offset)
+        store_id, offset = read_int(data, offset)
         store_name, offset = read_string(data, offset)
         _street, offset = read_string(data, offset)
-        _postal_code, offset = read_string(data, offset)
+        _postal_code, offset = read_int(data, offset)
         _city, offset = read_string(data, offset)
         _state, offset = read_string(data, offset)
         _lat, offset = read_float(data, offset)
@@ -210,23 +206,19 @@ def parse_item(data, offset, entity_type):
         item['store_name'] = store_name
         
     elif entity_type == "menu_items":
-        # item_id (str), item_name (str), category (str), price (f32), is_seasonal (1B),
-        # has_available_from (1B), [available_from (u64)], has_available_to (1B), [available_to (u64)]
-        item_id, offset = read_string(data, offset)
+        item_id, offset = read_uint32(data, offset)
         item_name, offset = read_string(data, offset)
-        _category, offset = read_string(data, offset)
+        _category, offset = read_bool(data, offset)
         price, offset = read_float(data, offset)
         _is_seasonal, offset = read_bool(data, offset)
         has_from, offset = read_bool(data, offset)
         if has_from:
-            _available_from, offset = read_date_as_iso(data, offset)
+            _available_from, offset = read_uint32(data, offset)
         has_to, offset = read_bool(data, offset)
         if has_to:
-            _available_to, offset = read_date_as_iso(data, offset)
+            _available_to, offset = read_uint32(data, offset)
         item['item_id'] = item_id
         item['item_name'] = item_name
-        # Incluir price para pasar validación en gateway.processor.validate_menu_item
-        item['price'] = price
     
     return item, offset
 
@@ -437,10 +429,12 @@ def handle_client(conn, addr):
                         break
                     else:
                         print(f"[GATEWAY] Error procesando batch: {e}")
+                        print(traceback.format_exc())
                         buffer = b""
                         break
                 except Exception as e:
                     print(f"[GATEWAY] Error procesando batch: {e}")
+                    print(traceback.format_exc())
                     buffer = b""
                     break
         

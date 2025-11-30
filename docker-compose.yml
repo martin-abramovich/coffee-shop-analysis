@@ -13,12 +13,15 @@ services:
       RABBITMQ_DEFAULT_PASS: guest
       RABBITMQ_LOG_LEVEL: warning
       RABBITMQ_HEARTBEAT: 300  # 5 minutes instead of default 60s
+    command: ["rabbitmq-server", "--log-level", "warning"]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 5s
       timeout: 10s
       retries: 10
       start_period: 30s
+    volumes:
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
     networks:
       - coffee-network
 
@@ -326,11 +329,14 @@ services:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
       HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
+    volumes:
+    - ./state/agregator1:/app/state
 
   aggregator_query2:
     build:
@@ -344,12 +350,14 @@ services:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
       HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
-      NUM_GROUP_BY_QUERY2_WORKERS: ${NUM_GROUP_BY_QUERY2_WORKERS}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
+    volumes:
+    - ./state/agregator2:/app/state
 
   aggregator_query3:
     build:
@@ -363,11 +371,14 @@ services:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
       HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
+    volumes:
+    - ./state/agregator3:/app/state
 
   aggregator_query4:
     build:
@@ -381,11 +392,14 @@ services:
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
       HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8888}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - coffee-network
+    volumes:
+      - ./state/agregator4:/app/state
 
   # ==================== MONITORS (Redundantes) ====================
   # 3 réplicas de monitores con algoritmo Bully para elección de líder

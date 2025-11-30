@@ -3,6 +3,7 @@ import os
 import signal
 import threading
 import time
+import traceback
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -33,25 +34,35 @@ def filter_by_amount(rows, threshold: float):
             # final_amount puede venir como string; convertir con float
             if isinstance(fa, str):
                 fa = float(fa)
+                
             if fa >= threshold:
-                filtered.append(r)
+                filtered.append({
+                    "transaction_id": r.get("transaction_id"),
+                    "final_amount": fa
+                })
+                
         except Exception:
             continue
+        
     return filtered
 
 
 def on_message(body):
-    header, rows = deserialize_message(body)
-    
-    if header.get("is_eos") == "true": 
-        print("SE RECIBIO EOS")
+    try:
+        header, rows = deserialize_message(body)
         
-    filtered = filter_by_amount(rows, THRESHOLD)
-    
-    out_msg = serialize_message(filtered, header)
-    
-    amount_trans_queue.send(out_msg)
-
+        if header.get("is_eos") == "true": 
+            print("SE RECIBIO EOS")
+            
+        filtered = filter_by_amount(rows, THRESHOLD)
+        
+        out_msg = serialize_message(filtered, header)
+        
+        amount_trans_queue.send(out_msg)
+    except Exception as e: 
+        print(f"[FilterAmount] Error procesando el mensaje de transactions: {e}")
+        print(traceback.format_exc())
+        
 if __name__ == "__main__":
     print(f"[FilterAmount] Iniciando worker {WORKER_ID}...")
     shutdown_event = threading.Event()

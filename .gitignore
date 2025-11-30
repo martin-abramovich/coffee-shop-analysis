@@ -6,6 +6,7 @@ data
 .data completa
 !.data/dataset.zip
 results/*
+state/*
 !results/results_expected.csv/
 !results/results_expected.csv/**
 .env

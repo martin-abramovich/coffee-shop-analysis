@@ -5,10 +5,12 @@ import threading
 from collections import defaultdict
 from datetime import datetime
 import time
+import traceback
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
+from common.utils import timestamp_to_year_month_int
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from workers.utils import deserialize_message, serialize_message
 from common.healthcheck import start_healthcheck_server
@@ -22,23 +24,6 @@ INPUT_ROUTING_KEYS = [f"worker_{WORKER_ID}", "eos"]  # routing keys específicas
 OUTPUT_EXCHANGE = "transactions_query2"           # exchange de salida para query 2
 ROUTING_KEY = "query2"                            # routing para topic
 
-def parse_month(created_at: str) -> str:
-    """Extrae el año-mes de created_at. Retorna formato 'YYYY-MM'."""
-    if not created_at:
-        raise ValueError("created_at vacío")
-    
-    try:
-        # Intentar extraer directamente los primeros 7 caracteres (YYYY-MM)
-        return created_at[:7]
-    except Exception:
-        # Fallback: parsing completo
-        try:
-            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            return f"{dt.year:04d}-{dt.month:02d}"
-        except Exception:
-            dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-            return f"{dt.year:04d}-{dt.month:02d}"
-
 def group_by_month_and_item(rows):
     """Agrupa por (mes, item_name) y calcula métricas para Query 2."""
     metrics = defaultdict(lambda: {
@@ -49,14 +34,13 @@ def group_by_month_and_item(rows):
     for r in rows:
         # Validar datos requeridos
         created_at = r.get("created_at")
-        item_id = r.get("item_id")  # CAMBIO: usar item_id en lugar de item_name
+        item_id = r.get("item_id") 
         
-        if not created_at or not item_id or not item_id.strip():
+        if not created_at or not item_id:
             continue
         
         try:
-            month = parse_month(created_at)
-            normalized_item_id = item_id.strip()
+            month = timestamp_to_year_month_int(int(created_at))
             
             # Extraer quantity y subtotal de la fila
             quantity = r.get("quantity", 0)
@@ -69,7 +53,7 @@ def group_by_month_and_item(rows):
                 subtotal = float(subtotal) if subtotal else 0.0
             
             # Clave compuesta: (mes, item_id)
-            key = (month, normalized_item_id)
+            key = (month, item_id)
             
             # Acumular métricas
             metrics[key]['total_quantity'] += quantity
@@ -86,40 +70,43 @@ batches_sent = 0
  
 def on_message(body):
     global batches_sent
-    header, rows = deserialize_message(body)
+    try: 
         
-     
-    # Agrupar por (mes, item_id) y calcular métricas
-    month_item_metrics = group_by_month_and_item(rows)
-    
-    batch_records = []
-    for (month, item_id), metrics in month_item_metrics.items():
-        if metrics['total_quantity'] > 0 or metrics['total_subtotal'] > 0:
-            # Crear un registro único con las métricas de (mes, item_id)
-            query2_record = {
-                'month': month,
-                'item_id': item_id,
-                'total_quantity': metrics['total_quantity'],
-                'total_subtotal': metrics['total_subtotal']
-            }
-            batch_records.append(query2_record)
-
-    
-    batch_header = header.copy() if header else {}
-    batch_header["batch_size"] = str(len(batch_records))
-    
-    out_msg = serialize_message(batch_records, batch_header)
-    mq_out.send(out_msg)
-    batches_sent += 1
-   
-    # Log compacto solo si hay datos significativos
-    if batches_sent <= 3 or batches_sent % 10000 == 0:
-        total_in = len(rows)
-        unique_months = len(set(month for month, _ in month_item_metrics.keys()))
-        unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
+        header, rows = deserialize_message(body)
+            
+        # Agrupar por (mes, item_id) y calcular métricas
+        month_item_metrics = group_by_month_and_item(rows)
         
-        print(f"[GroupByQuery2] batches_sent={batches_sent} in={total_in} created={len(month_item_metrics)} months={unique_months} items={unique_items}")
+        batch_records = []
+        for (month, item_id), metrics in month_item_metrics.items():
+            if metrics['total_quantity'] > 0 or metrics['total_subtotal'] > 0:
+                # Crear un registro único con las métricas de (mes, item_id)
+                query2_record = {
+                    'month': month,
+                    'item_id': item_id,
+                    'total_quantity': metrics['total_quantity'],
+                    'total_subtotal': metrics['total_subtotal']
+                }
+                batch_records.append(query2_record)
 
+        
+        batch_header = header.copy() if header else {}
+        
+        out_msg = serialize_message(batch_records, batch_header)
+        mq_out.send(out_msg)
+        batches_sent += 1
+    
+        # Log compacto solo si hay datos significativos
+        if batches_sent <= 3 or batches_sent % 10000 == 0:
+            total_in = len(rows)
+            unique_months = len(set(month for month, _ in month_item_metrics.keys()))
+            unique_items = len(set(item_id for _, item_id in month_item_metrics.keys()))
+            
+            print(f"[GroupByQuery2] batches_sent={batches_sent} in={total_in} created={len(month_item_metrics)} months={unique_months} items={unique_items}")
+    except Exception as e: 
+        print(f"[GroupByQuery2] Error procesando el mensaje de transactions: {e}")
+        print(traceback.format_exc())
+        
 if __name__ == "__main__":
     print(f"[GroupByQuery2] Iniciando worker {WORKER_ID}...")
     shutdown_event = threading.Event()

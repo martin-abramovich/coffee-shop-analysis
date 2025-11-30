@@ -1,3 +1,4 @@
+import calendar
 import csv
 from datetime import datetime, date
 
@@ -59,6 +60,15 @@ USER_INDEX = {
     "registered_at": 3,
 }
 
+def to_int(v):
+    try:
+        if v in ("", None):
+            return 0
+        # Convertir a float primero maneja strings como "151.0"
+        return int(float(v)) 
+    except:
+        return 0
+        
 def encode_string(s: str) -> bytes:
     """Codifica un string: 4 bytes para tamaño + string en UTF-8"""
     s_bytes = s.encode('utf-8')
@@ -118,39 +128,10 @@ def encode_int(i: int) -> bytes:
         i = 0
     return i.to_bytes(4, byteorder='big', signed=False)
 
-def encode_datetime(dt: datetime) -> bytes:
-    """Codifica datetime como timestamp (8 bytes)"""
-    try:
-        timestamp = int(dt.timestamp())
-        # Manejar timestamps negativos (fechas antes de 1970)
-        if timestamp < 0:
-            # Para fechas muy antiguas, usar una fecha mínima válida
-            timestamp = 0
-        return timestamp.to_bytes(8, byteorder='big', signed=False)
-    except (ValueError, OSError, OverflowError):
-        # Si hay error, usar timestamp 0
-        return (0).to_bytes(8, byteorder='big', signed=False)
-
-def encode_date(d: date) -> bytes:
-    """Codifica date como timestamp (8 bytes)"""
-    try:
-        dt = datetime.combine(d, datetime.min.time())
-        return encode_datetime(dt)
-    except (ValueError, OSError, OverflowError):
-        # Si hay error, usar timestamp 0
-        return (0).to_bytes(8, byteorder='big', signed=False)
 
 def encode_bool(b: bool) -> bytes:
     """Codifica bool como 1 byte"""
     return (1 if b else 0).to_bytes(1, byteorder='big', signed=False)
-
-    """Parsea un string a booleano"""
-    return bool_str.lower() in ('true', '1', 'yes', 'y')
-
-    """Parsea una fecha opcional"""
-    if not date_str or date_str.strip() == '':
-        return None
-    return parse_date(date_str)
 
 def encode_date_str(date_str: str) -> bytes:
     """Convierte un string 'YYYY-MM-DD' a 8 bytes timestamp"""
@@ -179,75 +160,103 @@ def encode_datetime_str(datetime_str: str) -> bytes:
         except Exception:
             return (0).to_bytes(8, 'big', signed=False)
 
+def encode_date(s) -> bytes:
+    """Parse YYYY-MM-DD → epoch (int) sin usar datetime, rapidísimo."""
+    y = int(s[0:4])
+    m = int(s[5:7])
+    d = int(s[8:10])
+    return encode_int(calendar.timegm((y, m, d, 0, 0, 0)))
+
+def encode_datetime(s) -> bytes:
+    """Parse YYYY-MM-DD HH:MM:SS → epoch sin datetime.strptime (10x más rápido)."""
+    y = int(s[0:4])
+    m = int(s[5:7])
+    d = int(s[8:10])
+    H = int(s[11:13])
+    M = int(s[14:16])
+    S = int(s[17:19])
+    #tiene sentido usar int32 porque tenemos hasta 2025, 
+    # si estamos en 2050 esto no funciona
+    return encode_int(calendar.timegm((y, m, d, H, M, S)))
+
 def encode_transaction(row: list) -> bytes:
     idx = TRANSACTION_INDEX
-    data = b''
-    data += encode_string(row[idx['transaction_id']])
-    data += encode_string(row[idx['store_id']])
-    data += encode_string(row[idx['payment_method_id']])
-    data += encode_string(row[idx['voucher_id']])
-    data += encode_string(row[idx['user_id']])
-    data += encode_float(float(row[idx['original_amount']]))
-    data += encode_float(float(row[idx['discount_applied']]))
-    data += encode_float(float(row[idx['final_amount']]))
-    data += encode_datetime_str(row[idx['created_at']])
-    return data
+    
+    b = bytearray()
+    b.extend(encode_string(row[idx['transaction_id']]))
+    b.extend(encode_int(to_int(row[idx['store_id']])))
+    b.extend(encode_int(to_int(row[idx['payment_method_id']])))
+    b.extend(encode_int(to_int(row[idx['voucher_id']])))
+    b.extend(encode_int(to_int(row[idx['user_id']])))
+    b.extend(encode_float(float(row[idx['original_amount']])))
+    b.extend(encode_float(float(row[idx['discount_applied']])))
+    b.extend(encode_float(float(row[idx['final_amount']])))
+    b.extend(encode_datetime(row[idx['created_at']]))
+    
+    return b
 
 
 def encode_transaction_item(row: list) -> bytes:
     idx = TRANSACTION_ITEM_INDEX
-    data = b''
-    data += encode_string(row[idx['transaction_id']])
-    data += encode_string(row[idx['item_id']])
-    data += encode_int(int(row[idx['quantity']]))
-    data += encode_float(float(row[idx['unit_price']]))
-    data += encode_float(float(row[idx['subtotal']]))
-    data += encode_datetime_str(row[idx['created_at']])
-    return data
+   
+    b = bytearray()
+    b.extend(encode_string(row[idx['transaction_id']]))
+    b.extend(encode_int(int(row[idx['item_id']])))
+    b.extend(encode_int(int(row[idx['quantity']])))
+    b.extend(encode_float(float(row[idx['unit_price']])))
+    b.extend(encode_float(float(row[idx['subtotal']])))
+    b.extend(encode_datetime(row[idx['created_at']]))
+    
+    return b
 
 
 def encode_user(row: list) -> bytes:
     idx = USER_INDEX
-    data = b''
-    data += encode_string(row[idx['user_id']])
-    data += encode_string(row[idx['gender']])
-    data += encode_date_str(row[idx['birthdate']])
-    data += encode_datetime_str(row[idx['registered_at']])
-    return data
+    
+    b = bytearray()
+    b.extend(encode_int(int(row[idx['user_id']])))
+    b.append(1 if row[1] == "male" else 0)
+    b.extend(encode_date(row[idx['birthdate']]))
+    b.extend(encode_datetime(row[idx['registered_at']]))
+    
+    return b
 
 
 def encode_store(row: list) -> bytes:
     """Codifica una tienda desde una fila CSV"""
     idx = STORE_INDEX
-    data = b''
-    data += encode_string(row[idx['store_id']])
-    data += encode_string(row[idx['store_name']])
-    data += encode_string(row[idx['street']])
-    data += encode_string(row[idx['postal_code']])
-    data += encode_string(row[idx['city']])
-    data += encode_string(row[idx['state']])
-    data += encode_float(float(row[idx['latitude']]))
-    data += encode_float(float(row[idx['longitud']]))  # corregido: longitud, no longitude
-    return data
+    b = bytearray() 
+    
+    b.extend(encode_int(int(row[idx['store_id']])))
+    b.extend( encode_string(row[idx['store_name']]))
+    b.extend( encode_string(row[idx['street']]))
+    b.extend( encode_int(int(row[idx['postal_code']])))
+    b.extend( encode_string(row[idx['city']]))
+    b.extend( encode_string(row[idx['state']]))
+    b.extend( encode_float(float(row[idx['latitude']])))
+    b.extend( encode_float(float(row[idx['longitud']])))
+    
+    return b
     
 def encode_item(row: list) -> bytes:
     idx = ITEM_INDEX
-    data = b''
-    data += encode_string(row[idx['item_id']])
-    data += encode_string(row[idx['item_name']])
-    data += encode_string(row[idx['category']])
-    data += encode_float(float(row[idx['price']]))
-    data += encode_bool(row[idx['is_seasonal']].lower() == 'true')
+    
+    b = bytearray()
+    b.extend( encode_int(int(row[idx['item_id']])))
+    b.extend( encode_string(row[idx['item_name']]))
+    b.append(1 if row[idx['category']] == "coffee" else 0)
+    b.extend( encode_int(to_int(row[idx['price']])))
+    b.extend( encode_bool(row[idx['is_seasonal']].lower() == 'true'))
 
     for key in ['available_from', 'available_to']:
         val = row[idx[key]].strip()
         if val:
-            data += encode_bool(True)
-            data += encode_date_str(val)
+            b.extend(encode_bool(True))
+            b.extend(encode_date(val))
         else:
-            data += encode_bool(False)
+            b.extend(encode_bool(False))
 
-    return data
+    return b
     
 def encode_row(row:dict, entity_type:str): 
     if entity_type == "transactions": 

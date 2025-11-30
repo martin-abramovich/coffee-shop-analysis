@@ -124,6 +124,53 @@ def store_results_locally(response_text: str, output_root: Optional[Path] = None
     if missing:
         logging.warning("Queries sin resultado recibido: %s", ", ".join(missing))
 
+def csv_reader_users_thread(base_path: str, batch_size: int, data_queue: queue.Queue, stop_event: threading.Event):
+    logging.debug("Hilo lector iniciado")
+    batch_count = 0
+    batch_id = [0] 
+    try:
+        base_path = Path(base_path)
+
+        folder_name = "users"
+        entity_type = "users"
+          
+        folder_path = base_path / folder_name
+        if not folder_path.exists() or not folder_path.is_dir():
+            logging.warning(f"Advertencia: No existe la carpeta {folder_path}")
+        
+        else:
+            # Iterar todos los CSV dentro de la carpeta
+            for csv_file in folder_path.glob("*.csv"):
+                if stop_event.is_set():
+                    break
+                
+                # Llamamos a entity_batch_iterator para cada CSV
+                logging.debug(f"Leyendo: {csv_file}")
+                for batch in entity_batch_iterator(str(csv_file), batch_size, entity_type, batch_id):
+                    if stop_event.is_set():
+                        break
+                    
+                    data_queue.put(('batch', batch))
+                    batch_count += 1
+                    batch_id[0] += 1 
+                    
+                    if batch_count <= 3 or batch_count % 10000 == 0:
+                        logging.debug(f"Batches leídos: {batch_count}, entidades en último: {len(batch)}")
+                        
+            batch = batch_eos(entity_type, batch_id)
+            data_queue.put(('batch', batch))
+            logging.debug(f"Batch EOS para {entity_type}")
+            
+                
+        
+        data_queue.put(('end', None, None))
+        logging.debug("Hilo lector terminado")
+        
+        
+    except Exception as e:
+        logging.error(f"Error crítico en hilo lector: {e}", exc_info=True)
+        data_queue.put(('error', str(e), None))
+        
 def csv_reader_transacctions_thread(base_path: str, batch_size: int, data_queue: queue.Queue, stop_event: threading.Event):
     logging.debug("Hilo lector iniciado")
     batch_count = 0
@@ -182,7 +229,6 @@ def csv_reader_thread(base_path: str, batch_size: int, data_queue: queue.Queue, 
             "menu_items": "menu_items",
             "stores": "stores",
             "transactions": "transactions",
-            "users": "users",
         }
 
         for folder_name, entity_type in folder_to_entity.items():
@@ -245,7 +291,7 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                 
                 if item[0] == 'end':
                     count_read_threads += 1
-                    if count_read_threads >= 2: 
+                    if count_read_threads >= 3: 
                         logging.debug("Fin de datos recibidos del hilo lector")
                         break
                 elif item[0] == 'error':
@@ -303,6 +349,12 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
         name="CSVReaderTrans"
     )
     
+    reader_users_thread = threading.Thread(
+        target=csv_reader_users_thread, 
+        args=(base_path, batch_size, data_queue, stop_event),
+        name="CSVReaderUsers"
+    )
+    
     sender_thread_obj = threading.Thread(
         target=sender_thread,
         args=(client, data_queue, stop_event),
@@ -314,11 +366,13 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
         reader_thread.start()
         sender_thread_obj.start()
         reader_trans_thread.start()
+        reader_users_thread.start()
         
         # Esperar a que terminen
         reader_thread.join()
         sender_thread_obj.join()
         reader_trans_thread.join()
+        reader_users_thread.join()
         
         
         logging.info("Procesamiento threaded completado")
@@ -332,6 +386,7 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
         reader_thread.join(timeout=5)
         sender_thread_obj.join(timeout=5)
         reader_trans_thread.join(timeout=5)
+        reader_users_thread.join(timeout=5)
         
         logging.warning("Threads cerrados por interrupción")
         raise
