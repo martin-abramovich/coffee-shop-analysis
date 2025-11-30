@@ -105,14 +105,12 @@ class AggregatorQuery4:
         session_data = self.__get_session_data(session_id)
         
         for row in rows:
-            store_id = row.get('store_id')
+            store_id = int(row.get('store_id'))
             store_name = row.get('store_name')
             
             if store_id and store_name:
-                normalized_store_id = canonicalize_id(store_id)
                 normalized_store_name = store_name.strip()
-                if normalized_store_id:
-                    session_data['stores'][int(normalized_store_id)] = normalized_store_name
+                session_data['stores'][store_id] = normalized_store_name
         
         logger.info(f"[AggregatorQuery4] Sesión {session_id}: Stores cargadas para JOIN: {len(session_data['stores'])}")
     

@@ -199,10 +199,10 @@ def parse_item(data, offset, entity_type):
         
     elif entity_type == "stores":
         # store_id (str), store_name (str), street (str), postal_code (str), city (str), state (str), latitude (f32), longitude (f32)
-        store_id, offset = read_string(data, offset)
+        store_id, offset = read_int(data, offset)
         store_name, offset = read_string(data, offset)
         _street, offset = read_string(data, offset)
-        _postal_code, offset = read_string(data, offset)
+        _postal_code, offset = read_int(data, offset)
         _city, offset = read_string(data, offset)
         _state, offset = read_string(data, offset)
         _lat, offset = read_float(data, offset)

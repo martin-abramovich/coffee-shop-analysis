@@ -225,16 +225,18 @@ def encode_user(row: list) -> bytes:
 def encode_store(row: list) -> bytes:
     """Codifica una tienda desde una fila CSV"""
     idx = STORE_INDEX
-    data = b''
-    data += encode_string(row[idx['store_id']])
-    data += encode_string(row[idx['store_name']])
-    data += encode_string(row[idx['street']])
-    data += encode_string(row[idx['postal_code']])
-    data += encode_string(row[idx['city']])
-    data += encode_string(row[idx['state']])
-    data += encode_float(float(row[idx['latitude']]))
-    data += encode_float(float(row[idx['longitud']]))  # corregido: longitud, no longitude
-    return data
+    b = bytearray() 
+    
+    b.extend(encode_int(int(row[idx['store_id']])))
+    b.extend( encode_string(row[idx['store_name']]))
+    b.extend( encode_string(row[idx['street']]))
+    b.extend( encode_int(int(row[idx['postal_code']])))
+    b.extend( encode_string(row[idx['city']]))
+    b.extend( encode_string(row[idx['state']]))
+    b.extend( encode_float(float(row[idx['latitude']])))
+    b.extend( encode_float(float(row[idx['longitud']])))
+    
+    return b
     
 def encode_item(row: list) -> bytes:
     idx = ITEM_INDEX
