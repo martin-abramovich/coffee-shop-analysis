@@ -240,22 +240,23 @@ def encode_store(row: list) -> bytes:
     
 def encode_item(row: list) -> bytes:
     idx = ITEM_INDEX
-    data = b''
-    data += encode_string(row[idx['item_id']])
-    data += encode_string(row[idx['item_name']])
-    data += encode_string(row[idx['category']])
-    data += encode_float(float(row[idx['price']]))
-    data += encode_bool(row[idx['is_seasonal']].lower() == 'true')
+    
+    b = bytearray()
+    b.extend( encode_int(int(row[idx['item_id']])))
+    b.extend( encode_string(row[idx['item_name']]))
+    b.append(1 if row[idx['category']] == "coffee" else 0)
+    b.extend( encode_int(to_int(row[idx['price']])))
+    b.extend( encode_bool(row[idx['is_seasonal']].lower() == 'true'))
 
     for key in ['available_from', 'available_to']:
         val = row[idx[key]].strip()
         if val:
-            data += encode_bool(True)
-            data += encode_date_str(val)
+            b.extend(encode_bool(True))
+            b.extend(encode_date(val))
         else:
-            data += encode_bool(False)
+            b.extend(encode_bool(False))
 
-    return data
+    return b
     
 def encode_row(row:dict, entity_type:str): 
     if entity_type == "transactions": 

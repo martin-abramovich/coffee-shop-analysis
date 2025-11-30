@@ -68,7 +68,7 @@ class AggregatorQuery2:
         session_data = self.__get_session_data(session_id)
         
         for row in rows:
-            item_id = row.get('item_id')
+            item_id = int(row.get('item_id'))
             item_name = row.get('item_name')
             
             if item_id and item_name:
@@ -82,7 +82,7 @@ class AggregatorQuery2:
         
         for row in rows:
             month = int(row.get('month'))
-            item_id = row.get('item_id')  # CAMBIO: usar item_id en lugar de item_name
+            item_id = int(row.get('item_id'))
             total_quantity = row.get('total_quantity', 0)
             total_subtotal = row.get('total_subtotal', 0.0)
             
@@ -100,7 +100,7 @@ class AggregatorQuery2:
                 continue
             
             # Clave compuesta: (mes, item_id)
-            key = (month, item_id if not isinstance(item_id, str) else item_id.strip())
+            key = (month, item_id)
             
             if key not in session_data['metrics']:
                 session_data['metrics'][key] = [0, 0.0]
@@ -133,7 +133,7 @@ class AggregatorQuery2:
         # Agrupar por mes y hacer JOIN con menu_items
         for (month, item_id), metrics in session_data['metrics'].items():
             # JOIN: buscar item_name para el item_id de esta sesión (o fallback al propio id)
-            item_name = session_data['menu_items'].get(item_id) or str(item_id)
+            item_name = session_data['menu_items'].get(item_id)
             
             results_by_month[month].append({
                 'item_id': item_id,
