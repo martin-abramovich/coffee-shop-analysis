@@ -207,16 +207,19 @@ class AggregatorQuery3:
         header, rows = deserialize_message(body)
 
         session_id = header.get("session_id", "unknown")
-        bach_id = int(header.get("batch_id"))
+        batch_id = int(header.get("batch_id"))
         is_eos = header.get("is_eos")
 
+        if self.session_tracker.previus_update(session_id, "tpv", batch_id):
+            return
+        
         if is_eos:
-            logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en TPV para sesión {session_id}, batch_id {bach_id}")
+            logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en TPV para sesión {session_id}, batch_id {batch_id}")
             
         if rows:
             self.__accumulate_tpv(rows, session_id)
             
-        if self.session_tracker.update(session_id, "tpv", bach_id, is_eos):
+        if self.session_tracker.update(session_id, "tpv", batch_id, is_eos):
             self.__generate_and_send_results(session_id)
             self.__del_session(session_id)
             
@@ -233,15 +236,18 @@ class AggregatorQuery3:
         
         session_id = header.get("session_id", "unknown")
         is_eos = header.get("is_eos")
-        bach_id = int(header.get("batch_id", -1))
+        batch_id = int(header.get("batch_id", -1))
 
+        if self.session_tracker.previus_update(session_id, "stores", batch_id):
+            return
+        
         if is_eos:
-            logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en Stores para sesión {session_id}, batch_id {bach_id}")
+            logger.info(f"[AggregatorQuery3] Recibido mensaje EOS en Stores para sesión {session_id}, batch_id {batch_id}")
         
         if rows:
             self.__load_stores(rows, session_id)
             
-        if self.session_tracker.update(session_id, "stores", bach_id, is_eos):
+        if self.session_tracker.update(session_id, "stores", batch_id, is_eos):
             self.__generate_and_send_results(session_id)
             self.__del_session(session_id)
         else: 

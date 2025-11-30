@@ -247,9 +247,12 @@ class AggregatorQuery2:
             batch_id = int(header.get("batch_id"))
             is_eos = header.get("is_eos")
             
+            if self.session_tracker.previus_update(session_id, "metrics", batch_id):
+                return
+            
             if is_eos:
                 logger.info(f"Se recibió EOS en metrics para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
-                
+            
             if rows:
                 self.accumulate_metrics(rows, session_id)
             
@@ -277,6 +280,9 @@ class AggregatorQuery2:
                 
             if is_eos:
                 logger.info(f"Se recibió EOS en metrics para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
+            
+            if self.session_tracker.previus_update(session_id, "menu_items", batch_id):
+                return
             
             if rows:
                 self.load_menu_items(rows, session_id)
