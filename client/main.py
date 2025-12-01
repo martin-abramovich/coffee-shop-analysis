@@ -15,6 +15,8 @@ import time
 
 # Variable global para el cliente (necesario para signal handler)
 global_client = None
+global_stop_event = None  # Evento para detener threads desde signal handler
+shutdown_flag = threading.Event()  # Flag para indicar que se recibió señal de cierre
 DEFAULT_RESULTS_DIR = Path(os.environ.get("CLIENT_RESULTS_DIR", "./results"))
 
 def setup_logging(level: str):
@@ -33,11 +35,17 @@ def signal_handler(signum, frame):
     signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
     logging.info(f"\nSeñal {signal_name} recibida. Iniciando cierre ordenado...")
     
+    # Marcar que se recibió señal de cierre
+    shutdown_flag.set()
+    
     if global_client:
         global_client.request_shutdown()
     
-    logging.info("Cliente terminado por señal del sistema.")
-    sys.exit(0)
+    # Establecer stop_event si está disponible para detener threads
+    if global_stop_event:
+        global_stop_event.set()
+    
+    # NO llamar sys.exit() aquí - dejar que el código principal maneje el cierre
 
 def setup_signal_handlers():
     """Configura los manejadores de señales"""
@@ -330,35 +338,42 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
     """
     Coordina la lectura y envío usando dos threads separados.
     """
+    global global_stop_event
+    
     logging.info(f"Iniciando procesamiento con threading para archivos")
     
     # Cola para comunicar entre threads
     data_queue = queue.Queue(maxsize=50)  # Limitar tamaño para evitar usar mucha memoria
     stop_event = threading.Event()
+    global_stop_event = stop_event  # Hacer disponible para signal handler
     
     # Crear threads
     reader_thread = threading.Thread(
         target=csv_reader_thread, 
         args=(base_path, batch_size, data_queue, stop_event),
-        name="CSVReader"
+        name="CSVReader",
+        daemon=False
     )
     
     reader_trans_thread = threading.Thread(
         target=csv_reader_transacctions_thread, 
         args=(base_path, batch_size, data_queue, stop_event),
-        name="CSVReaderTrans"
+        name="CSVReaderTrans",
+        daemon=False
     )
     
     reader_users_thread = threading.Thread(
         target=csv_reader_users_thread, 
         args=(base_path, batch_size, data_queue, stop_event),
-        name="CSVReaderUsers"
+        name="CSVReaderUsers",
+        daemon=False
     )
     
     sender_thread_obj = threading.Thread(
         target=sender_thread,
         args=(client, data_queue, stop_event),
-        name="DataSender"
+        name="DataSender",
+        daemon=False
     )
     
     try:
@@ -368,14 +383,33 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
         reader_trans_thread.start()
         reader_users_thread.start()
         
-        # Esperar a que terminen
-        reader_thread.join()
-        sender_thread_obj.join()
-        reader_trans_thread.join()
-        reader_users_thread.join()
+        # Verificar si se recibió señal de cierre antes de esperar
+        if shutdown_flag.is_set():
+            logging.info("Señal de cierre detectada, deteniendo threads...")
+            stop_event.set()
+            client.request_shutdown()
         
+        # Esperar a que todos los threads terminen
+        # Usar join con timeout para poder verificar periódicamente la señal
+        timeout = 10  # 10 segundos máximo
+        threads = [reader_thread, sender_thread_obj, reader_trans_thread, reader_users_thread]
         
-        logging.info("Procesamiento threaded completado")
+        for thread in threads:
+            remaining_timeout = timeout
+            while thread.is_alive() and remaining_timeout > 0:
+                thread.join(timeout=min(1.0, remaining_timeout))
+                remaining_timeout -= 1.0
+                
+                # Si se recibe señal durante la espera, establecer stop_event
+                if shutdown_flag.is_set() and not stop_event.is_set():
+                    logging.info("Señal de cierre detectada durante espera, deteniendo threads...")
+                    stop_event.set()
+                    client.request_shutdown()
+        
+        if any(t.is_alive() for t in threads):
+            logging.warning("Algunos threads no terminaron en el tiempo esperado")
+        else:
+            logging.info("Procesamiento threaded completado")
         
     except KeyboardInterrupt:
         logging.warning("\nInterrupción detectada, cerrando threads...")
@@ -395,6 +429,8 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
         logging.error(f"Error en procesamiento threaded: {e}")
         stop_event.set()
         raise
+    finally:
+        global_stop_event = None  # Limpiar referencia global
 
 
 def main():
@@ -466,6 +502,10 @@ def main():
     except Exception as e:
         logging.exception(f"Error inesperado: {e}")
         return 1
+    finally:
+        # Asegurar limpieza si se recibió señal de cierre
+        if shutdown_flag.is_set():
+            logging.info("Cierre completado por señal del sistema.")
     return 0
 
 if __name__ == "__main__":
