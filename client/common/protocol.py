@@ -1,6 +1,7 @@
 import calendar
 import csv
 from datetime import datetime, date
+import threading
 
 # Constantes para tipos de entidad
 ENTITY_TYPES = {
