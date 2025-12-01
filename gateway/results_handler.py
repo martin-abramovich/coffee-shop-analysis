@@ -7,11 +7,16 @@ import sys
 import os
 import threading
 from collections import defaultdict
+import logging
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from middleware.middleware import MessageMiddlewareExchange
 from workers.utils import deserialize_message
 from gateway.result_dispatcher import result_dispatcher
+from workers.session_tracker import SessionTracker
+from workers.aggregator.sesion_state_manager import SessionStateManager, merge_list
+
+logger = logging.getLogger(__name__)
 
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 OUTPUT_DIR = './results'
@@ -24,6 +29,14 @@ RESULT_EXCHANGES = {
     'query4': ('results_query4', 'query4_results')
 }
 
+# Configuración del State Manager para persistencia de resultados
+DEFAULT_DATA_CONFIGS_STATE_MANAGER = {
+    "query1": (list, merge_list),
+    "query2": (list, merge_list),
+    "query3": (list, merge_list),
+    "query4": (list, merge_list),
+}
+
 class ResultsHandler:
     def __init__(self, output_dir):
         self.output_dir = output_dir
@@ -31,29 +44,57 @@ class ResultsHandler:
         self.results = defaultdict(lambda: defaultdict(list))
         # Lock para proteger acceso concurrente a self.results
         self.lock = threading.Lock()
+        
+        # Session Tracker y State Manager para tolerancia a fallos
+        self.session_tracker = SessionTracker(["query1", "query2", "query3", "query4"])
+        self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER, base_dir="./state_results")
+        
         print(f"[ResultsHandler] Directorio (deprecated): {self.output_dir}")
+        
+        # Cargar sesiones previas
+        self.__load_sessions()
     
     def collect_result(self, query_name, rows, header):
         session_id = header.get('session_id', 'default')
+        batch_num = int(header.get('batch_number', 1))
+        total_batches = int(header.get('total_batches', 1))
+        
+        # Convertir batch_number (base-1) a batch_id (base-0) para el tracker
+        batch_id = batch_num - 1
         
         # Reducir verbosidad: mostrar solo conteo y batch
-        print(f"[ResultsHandler] {query_name} (sesión {session_id}): filas={len(rows)} batch={header.get('batch_number', '?')}/{header.get('total_batches', '?')}")
+        print(f"[ResultsHandler] {query_name} (sesión {session_id}): filas={len(rows)} batch={batch_num}/{total_batches}")
+        
+        # Verificar si ya procesamos este batch
+        if self.session_tracker.previus_update(session_id, query_name, batch_id):
+            print(f"[ResultsHandler] Batch duplicado ignorado: {query_name} (sesión {session_id}) batch={batch_num}")
+            return
         
         if header.get('is_final_result') == 'true':
-            batch_num = header.get('batch_number', '?')
-            total_batches = header.get('total_batches', '?')
-            
             # Proteger acceso concurrente a self.results
             with self.lock:
+                # Inicializar sesión si no existe
+                if session_id not in self.results:
+                    self.results[session_id] = defaultdict(list)
+                
                 # Acumular resultados por sesión y query
                 self.results[session_id][query_name].extend(rows)
                 current_count = len(self.results[session_id][query_name])
             
             print(f"[ResultsHandler] {query_name} (sesión {session_id}): Batch {batch_num}/{total_batches} acumulado={current_count}")
             
-            if batch_num == total_batches:
+            # Determinar si es el último batch (EOS para este query)
+            is_eos = (batch_num == total_batches)
+            
+            # Actualizar el tracker y verificar si todo está completo
+            if self.session_tracker.update(session_id, query_name, batch_id, is_eos):
+                # Todos los tipos completados para esta sesión - despachar y limpiar
                 print(f"[ResultsHandler] Último batch recibido para {query_name} (sesión {session_id}), despachando resultados al cliente...")
                 self.dispatch_results(query_name, header, session_id)
+                self.__del_session(session_id)
+            else:
+                # Guardar estado incremental
+                self.__save_session_add(session_id, query_name, rows)
         else:
             print(f"[ResultsHandler] Mensaje ignorado - is_final_result={header.get('is_final_result')}")
     
@@ -93,6 +134,41 @@ class ResultsHandler:
         print(f"[ResultsHandler] Resultados enviados al cliente (total filas: {len(results_list)})")
         print(f"{'='*60}\n")
 
+    def __save_session_add(self, session_id, query_name, rows):
+        """Guarda estado incremental de resultados parciales"""
+        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, query_name)
+        self.state_manager.save_type_state_add(session_id, query_name, rows, tracker_snap)
+    
+    def __del_session(self, session_id):
+        """Elimina sesión de memoria y disco"""
+        with self.lock:
+            if session_id in self.results:
+                del self.results[session_id]
+        
+        # Borrar del disco
+        self.state_manager.delete_session(session_id)
+    
+    def __load_sessions(self):
+        """Carga sesiones previas desde disco al iniciar"""
+        logger.info("[ResultsHandler] Intentando recuperar estado previo...")
+        saved_data, saved_tracker = self.state_manager.load_all_sessions()
+        
+        if saved_data and saved_tracker:
+            self.session_tracker.load_state_snapshot(saved_tracker)
+            
+            # Reconstruir self.results desde el estado guardado
+            with self.lock:
+                for session_id, queries_data in saved_data.items():
+                    if session_id not in self.results:
+                        self.results[session_id] = defaultdict(list)
+                    
+                    for query_name, rows in queries_data.items():
+                        self.results[session_id][query_name] = rows
+            
+            logger.info(f"[ResultsHandler] Estado recuperado. Sesiones activas: {len(self.results)}")
+        else:
+            logger.info("[ResultsHandler] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
+    
     def _resolve_columns(self, header, results_list):
         if not results_list:
             return []
