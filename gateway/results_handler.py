@@ -45,14 +45,26 @@ class ResultsHandler:
         # Lock para proteger acceso concurrente a self.results
         self.lock = threading.Lock()
         
-        # Session Tracker y State Manager para tolerancia a fallos
-        self.session_tracker = SessionTracker(["query1", "query2", "query3", "query4"])
+        # Session Tracker separado para cada query (cada query es independiente)
+        # Usamos un tracker por query-session en lugar de un tracker global
+        self.session_trackers = {}  # {(session_id, query_name): SessionTracker}
+        self.trackers_lock = threading.Lock()
+        
         self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER, base_dir="./state_results")
         
         print(f"[ResultsHandler] Directorio (deprecated): {self.output_dir}")
         
         # Cargar sesiones previas
         self.__load_sessions()
+    
+    def __get_tracker(self, session_id, query_name):
+        """Obtiene o crea un tracker para una combinación session_id + query_name"""
+        key = (session_id, query_name)
+        with self.trackers_lock:
+            if key not in self.session_trackers:
+                # Cada query tiene su propio tracker independiente
+                self.session_trackers[key] = SessionTracker([query_name])
+            return self.session_trackers[key]
     
     def collect_result(self, query_name, rows, header):
         session_id = header.get('session_id', 'default')
@@ -65,8 +77,11 @@ class ResultsHandler:
         # Reducir verbosidad: mostrar solo conteo y batch
         print(f"[ResultsHandler] {query_name} (sesión {session_id}): filas={len(rows)} batch={batch_num}/{total_batches}")
         
+        # Obtener el tracker específico para esta query en esta sesión
+        tracker = self.__get_tracker(session_id, query_name)
+        
         # Verificar si ya procesamos este batch
-        if self.session_tracker.previus_update(session_id, query_name, batch_id):
+        if tracker.previus_update(session_id, query_name, batch_id):
             print(f"[ResultsHandler] Batch duplicado ignorado: {query_name} (sesión {session_id}) batch={batch_num}")
             return
         
@@ -86,15 +101,15 @@ class ResultsHandler:
             # Determinar si es el último batch (EOS para este query)
             is_eos = (batch_num == total_batches)
             
-            # Actualizar el tracker y verificar si todo está completo
-            if self.session_tracker.update(session_id, query_name, batch_id, is_eos):
-                # Todos los tipos completados para esta sesión - despachar y limpiar
+            # Actualizar el tracker y verificar si esta query está completa
+            if tracker.update(session_id, query_name, batch_id, is_eos):
+                # Esta query específica está completa - despachar y limpiar
                 print(f"[ResultsHandler] Último batch recibido para {query_name} (sesión {session_id}), despachando resultados al cliente...")
                 self.dispatch_results(query_name, header, session_id)
-                self.__del_session(session_id)
+                self.__del_session_query(session_id, query_name)
             else:
                 # Guardar estado incremental
-                self.__save_session_add(session_id, query_name, rows)
+                self.__save_session_add(session_id, query_name, rows, tracker)
         else:
             print(f"[ResultsHandler] Mensaje ignorado - is_final_result={header.get('is_final_result')}")
     
@@ -104,9 +119,6 @@ class ResultsHandler:
             session_bucket = self.results.get(session_id, {})
             query_rows = session_bucket.get(query_name, [])
             results_list = list(query_rows)
-            session_bucket.pop(query_name, None)
-            if not session_bucket and session_id in self.results:
-                del self.results[session_id]
         
         if not results_list:
             return
@@ -134,19 +146,36 @@ class ResultsHandler:
         print(f"[ResultsHandler] Resultados enviados al cliente (total filas: {len(results_list)})")
         print(f"{'='*60}\n")
 
-    def __save_session_add(self, session_id, query_name, rows):
+    def __save_session_add(self, session_id, query_name, rows, tracker):
         """Guarda estado incremental de resultados parciales"""
-        tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, query_name)
+        tracker_snap = tracker.get_single_session_type_snapshot(session_id, query_name)
         self.state_manager.save_type_state_add(session_id, query_name, rows, tracker_snap)
     
-    def __del_session(self, session_id):
-        """Elimina sesión de memoria y disco"""
+    def __del_session_query(self, session_id, query_name):
+        """Elimina una query específica de una sesión de memoria y disco"""
+        # Limpiar de memoria
         with self.lock:
-            if session_id in self.results:
-                del self.results[session_id]
+            if session_id in self.results and query_name in self.results[session_id]:
+                del self.results[session_id][query_name]
+                
+                # Si no quedan queries en esta sesión, eliminar la sesión completa
+                if not self.results[session_id]:
+                    del self.results[session_id]
         
-        # Borrar del disco
-        self.state_manager.delete_session(session_id)
+        # Limpiar tracker
+        key = (session_id, query_name)
+        with self.trackers_lock:
+            if key in self.session_trackers:
+                del self.session_trackers[key]
+        
+        # Verificar si debemos borrar toda la sesión del disco
+        # Solo borrar si no hay más queries activas para esta sesión
+        with self.lock:
+            session_has_data = session_id in self.results and len(self.results[session_id]) > 0
+        
+        if not session_has_data:
+            # No hay más queries activas, borrar del disco
+            self.state_manager.delete_session(session_id)
     
     def __load_sessions(self):
         """Carga sesiones previas desde disco al iniciar"""
@@ -154,9 +183,7 @@ class ResultsHandler:
         saved_data, saved_tracker = self.state_manager.load_all_sessions()
         
         if saved_data and saved_tracker:
-            self.session_tracker.load_state_snapshot(saved_tracker)
-            
-            # Reconstruir self.results desde el estado guardado
+            # Reconstruir self.results y trackers desde el estado guardado
             with self.lock:
                 for session_id, queries_data in saved_data.items():
                     if session_id not in self.results:
@@ -164,6 +191,16 @@ class ResultsHandler:
                     
                     for query_name, rows in queries_data.items():
                         self.results[session_id][query_name] = rows
+                        
+                        # Reconstruir tracker para esta query
+                        if session_id in saved_tracker and query_name in saved_tracker[session_id]:
+                            key = (session_id, query_name)
+                            with self.trackers_lock:
+                                tracker = SessionTracker([query_name])
+                                # Cargar solo el snapshot de esta query específica
+                                query_tracker_data = {session_id: saved_tracker[session_id]}
+                                tracker.load_state_snapshot(query_tracker_data)
+                                self.session_trackers[key] = tracker
             
             logger.info(f"[ResultsHandler] Estado recuperado. Sesiones activas: {len(self.results)}")
         else:
