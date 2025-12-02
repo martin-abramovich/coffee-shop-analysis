@@ -52,13 +52,25 @@ class Client:
             return data.decode("utf-8")
 
     def _recv_exact(self, n: int) -> bytes:
-        """Recibe exactamente n bytes (evita short read)."""
+        """Recibe exactamente n bytes (evita short read). Respeta stop_event."""
         buf = b""
+        # Configurar timeout para que recv() no bloquee indefinidamente
+        self.sock.settimeout(1.0)
+        
         while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
-            if not chunk:
-                raise ConnectionError("Connection closed unexpectedly")
-            buf += chunk
+            # Verificar si se solicitó detener
+            if self.stop_event.is_set():
+                raise RuntimeError("Cliente detenido por usuario")
+            
+            try:
+                chunk = self.sock.recv(n - len(buf))
+                if not chunk:
+                    raise ConnectionError("Connection closed unexpectedly")
+                buf += chunk
+            except socket.timeout:
+                # Timeout esperado, continuar esperando
+                continue
+            
         return buf
 
     def close(self):

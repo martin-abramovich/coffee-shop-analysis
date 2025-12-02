@@ -376,9 +376,10 @@ def handle_client(conn, addr):
             try:
                 data = conn.recv(65536)  # Buffer de 64KB (optimización de throughput)
                 if not data:
-                    # recv() retorna vacío cuando el cliente hace shutdown(SHUT_WR) (half-close)
-                    # Esto significa que el cliente terminó de enviar datos pero sigue esperando respuesta
-                    print(f"[GATEWAY] Sesión {session_id}: Cliente terminó de enviar datos (half-close)")
+                    # recv() retorna vacío: puede ser half-close o desconexión completa
+                    # En un half-close normal (shutdown(SHUT_WR)), el cliente espera respuesta
+                    # Si el socket se cerró completamente, lo detectaremos al intentar enviar
+                    print(f"[GATEWAY] Sesión {session_id}: Cliente terminó de enviar datos")
                     break
             except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError) as e:
                 # Excepciones reales indican desconexión completa
@@ -483,11 +484,11 @@ def handle_client(conn, addr):
                     expected_queries=expected,
                 )
             else:
-                # Cliente conectado: esperar resultados con timeout
+                # Cliente conectado: esperar resultados sin timeout; la cancelación la maneja ResultDispatcher
                 results_payload, missing_queries = result_dispatcher.wait_for_results(
                     session_id,
                     expected_queries=expected,
-                    timeout=300.0,  # Timeout de 5 minutos como máximo
+                    timeout=None,
                 )
         except Exception as wait_error:
             print(f"[GATEWAY] Sesión {session_id}: Error esperando resultados: {wait_error}")
@@ -511,6 +512,11 @@ def handle_client(conn, addr):
                 payload = json.dumps(response_body).encode('utf-8')
                 header = len(payload).to_bytes(4, byteorder='big')
                 conn.sendall(header + payload)
+                print(f"[GATEWAY] Sesión {session_id}: Respuesta enviada al cliente ({len(payload)} bytes)")
+            except (BrokenPipeError, ConnectionResetError, OSError) as send_error:
+                # Si falla al enviar, es porque el cliente se desconectó
+                print(f"[GATEWAY] Sesión {session_id}: Cliente desconectado al enviar respuesta: {send_error}")
+                session.client_disconnected = True
             except Exception as send_error:
                 print(f"[GATEWAY] Sesión {session_id}: Error enviando respuesta final: {send_error}")
         else:

@@ -419,6 +419,12 @@ def main():
                     logging.info(f"Tiempo total desde envío hasta confirmación: {elapsed:.2f}s")
                     store_results_locally(response)
                     
+                except RuntimeError as e:
+                    # RuntimeError es lanzado cuando el usuario cancela con Ctrl+C
+                    if "detenido por usuario" in str(e):
+                        logging.info("Recepción de respuesta cancelada por el usuario")
+                    else:
+                        logging.error(f"Error: {e}")
                 except Exception as e:
                    logging.error(f"No se pudo recibir respuesta del servidor: {e}", exc_info=True)
             else:
