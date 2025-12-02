@@ -274,6 +274,7 @@ class ClientSession:
         self.batch_count = 0
         self.total_processed = 0
         self.is_active = True
+        self.client_disconnected = False
         
     def get_stats(self):
         duration = time.time() - self.start_time
@@ -372,9 +373,17 @@ def handle_client(conn, addr):
     
     try:
         while True:
-            data = conn.recv(65536)  # Buffer de 64KB (optimización de throughput)
-            if not data:
-                print("SALGO POR FALTA De DATA")
+            try:
+                data = conn.recv(65536)  # Buffer de 64KB (optimización de throughput)
+                if not data:
+                    # recv() retorna vacío cuando el cliente hace shutdown(SHUT_WR) (half-close)
+                    # Esto significa que el cliente terminó de enviar datos pero sigue esperando respuesta
+                    print(f"[GATEWAY] Sesión {session_id}: Cliente terminó de enviar datos (half-close)")
+                    break
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError) as e:
+                # Excepciones reales indican desconexión completa
+                print(f"[GATEWAY] Sesión {session_id}: Cliente desconectado abruptamente: {e}")
+                session.client_disconnected = True
                 break
 
             buffer += data
@@ -440,6 +449,7 @@ def handle_client(conn, addr):
         
     except Exception as e:
         print(f"[GATEWAY] Sesión {session_id}: Error en conexión con {addr}: {e}")
+        session.client_disconnected = True
     finally:
         # Marcar sesión como inactiva
         session.is_active = False
@@ -461,35 +471,50 @@ def handle_client(conn, addr):
                 
         results_payload = {}
         missing_queries = []
+        expected = EXPECTED_RESULT_QUERIES if EXPECTED_RESULT_QUERIES else None
+        
         try:
-            expected = EXPECTED_RESULT_QUERIES if EXPECTED_RESULT_QUERIES else None
-            results_payload, missing_queries = result_dispatcher.wait_for_results(
-                session_id,
-                expected_queries=expected,
-                timeout=None,
-            )
+            if session.client_disconnected:
+                # Cliente desconectado: obtener resultados disponibles sin esperar
+                print(f"[GATEWAY] Sesión {session_id}: Cliente desconectado, obteniendo resultados disponibles")
+                result_dispatcher.cancel_wait(session_id)
+                results_payload, missing_queries = result_dispatcher.get_results_immediate(
+                    session_id,
+                    expected_queries=expected,
+                )
+            else:
+                # Cliente conectado: esperar resultados con timeout
+                results_payload, missing_queries = result_dispatcher.wait_for_results(
+                    session_id,
+                    expected_queries=expected,
+                    timeout=300.0,  # Timeout de 5 minutos como máximo
+                )
         except Exception as wait_error:
             print(f"[GATEWAY] Sesión {session_id}: Error esperando resultados: {wait_error}")
         finally:
             result_dispatcher.cleanup_session(session_id)
         
         # Enviar ACK final al cliente (4 bytes longitud + JSON UTF-8)
-        try:
-            summary_text = f"OK session={session_id} batches={session.batch_count} total_records={session.total_processed}"
-            response_body = {
-                "status": "OK",
-                "session_id": session_id,
-                "batch_count": session.batch_count,
-                "total_processed": session.total_processed,
-                "summary": summary_text,
-                "results": results_payload,
-                "missing_results": missing_queries,
-            }
-            payload = json.dumps(response_body).encode('utf-8')
-            header = len(payload).to_bytes(4, byteorder='big')
-            conn.sendall(header + payload)
-        except Exception as send_error:
-            print(f"[GATEWAY] Sesión {session_id}: Error enviando respuesta final: {send_error}")
+        # Solo si el cliente sigue conectado
+        if not session.client_disconnected:
+            try:
+                summary_text = f"OK session={session_id} batches={session.batch_count} total_records={session.total_processed}"
+                response_body = {
+                    "status": "OK",
+                    "session_id": session_id,
+                    "batch_count": session.batch_count,
+                    "total_processed": session.total_processed,
+                    "summary": summary_text,
+                    "results": results_payload,
+                    "missing_results": missing_queries,
+                }
+                payload = json.dumps(response_body).encode('utf-8')
+                header = len(payload).to_bytes(4, byteorder='big')
+                conn.sendall(header + payload)
+            except Exception as send_error:
+                print(f"[GATEWAY] Sesión {session_id}: Error enviando respuesta final: {send_error}")
+        else:
+            print(f"[GATEWAY] Sesión {session_id}: Cliente desconectado, omitiendo envío de respuesta")
         # Cerrar conexiones del thread
         print(f"[GATEWAY] Sesión {session_id}: Cerrando conexiones RabbitMQ...")
         for entity_type, mq in thread_mq_map.items():

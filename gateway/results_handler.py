@@ -36,6 +36,10 @@ class ResultsHandler:
     def collect_result(self, query_name, rows, header):
         session_id = header.get('session_id', 'default')
         
+        # Si la sesión está cancelada, ignorar resultados
+        if result_dispatcher.is_session_cancelled(session_id):
+            return
+        
         # Reducir verbosidad: mostrar solo conteo y batch
         print(f"[ResultsHandler] {query_name} (sesión {session_id}): filas={len(rows)} batch={header.get('batch_number', '?')}/{header.get('total_batches', '?')}")
         
@@ -45,6 +49,10 @@ class ResultsHandler:
             
             # Proteger acceso concurrente a self.results
             with self.lock:
+                # Verificar nuevamente si fue cancelada (race condition)
+                if result_dispatcher.is_session_cancelled(session_id):
+                    return
+                
                 # Acumular resultados por sesión y query
                 self.results[session_id][query_name].extend(rows)
                 current_count = len(self.results[session_id][query_name])
@@ -58,6 +66,13 @@ class ResultsHandler:
             print(f"[ResultsHandler] Mensaje ignorado - is_final_result={header.get('is_final_result')}")
     
     def dispatch_results(self, query_name, header, session_id):
+        if result_dispatcher.is_session_cancelled(session_id):
+            # Limpiar resultados acumulados
+            with self.lock:
+                if session_id in self.results:
+                    del self.results[session_id]
+            return
+        
         # Proteger lectura de results con lock
         with self.lock:
             session_bucket = self.results.get(session_id, {})
