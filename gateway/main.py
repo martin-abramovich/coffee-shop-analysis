@@ -119,22 +119,26 @@ def main():
                             continue
 
                         # Crear thread para manejar cliente
-                        client_thread = threading.Thread(
-                            target=handle_client_wrapper,
-                            args=(conn, addr),
-                            name=f"Client-{addr[0]}:{addr[1]}"
-                        )
-                        client_thread.daemon = True
                         try:
+                            client_thread = threading.Thread(
+                                target=handle_client_wrapper,
+                                args=(conn, addr),
+                                name=f"Client-{addr[0]}:{addr[1]}"
+                            )
+                            client_thread.daemon = True
                             client_thread.start()
+                            
+                            with threads_lock:
+                                active_threads.append(client_thread)
                         except Exception as thread_error:
+                            # Si falla la creación o inicio del thread, cerrar conn aquí
                             client_slots.release()
                             logger.error(f"No se pudo iniciar thread para {addr}: {thread_error}")
-                            reject_client_connection(conn)
+                            try:
+                                conn.close()
+                            except:
+                                pass
                             continue
-                        
-                        with threads_lock:
-                            active_threads.append(client_thread)
                         
                         # Thread creado para cliente
                         
