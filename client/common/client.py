@@ -17,15 +17,20 @@ class Client:
     def send_batch(self, batch):
         """
         Envía un batch de entidades del mismo tipo usando el protocolo binario.
+        Retorna True si se envió exitosamente, False si se canceló por stop_event.
+        Lanza excepciones de red si falla la comunicación.
         """
         with self._lock:
             if self.stop_event.is_set():
-                return 
+                return False
             
             if not self.sock:
                 raise RuntimeError("Cliente no conectado. Llama connect() primero.")
             
+            # sendall() maneja short writes automáticamente
+            # pero puede lanzar excepciones que el caller debe manejar
             self.sock.sendall(batch)
+            return True
 
 
     def receive_response(self) -> str:

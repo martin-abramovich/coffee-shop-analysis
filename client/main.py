@@ -296,13 +296,21 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                     continue
                 elif item[0] == 'batch':
                     _, batch = item
-                                        
-                    client.send_batch(batch)
-                    total_batches_sent += 1
-                    total_entities_sent += len(batch)
                     
-                    if total_batches_sent <=  3 or total_batches_sent % 10000 == 0:
-                        logging.debug(f"Enviados {total_batches_sent} batches, entidades en último: {len(batch)}")
+                    # Intentar enviar el batch
+                    # send_batch() retorna False si se canceló, True si se envió, o lanza excepción si falló
+                    sent = client.send_batch(batch)
+                    
+                    if sent:
+                        total_batches_sent += 1
+                        total_entities_sent += len(batch)
+                        
+                        if total_batches_sent <=  3 or total_batches_sent % 10000 == 0:
+                            logging.debug(f"Enviados {total_batches_sent} batches, entidades en último: {len(batch)}")
+                    else:
+                        # send_batch retornó False: cancelado por stop_event
+                        logging.debug("Envío cancelado por stop_event, finalizando...")
+                        break
                     
                     data_queue.task_done()
                 
@@ -419,6 +427,12 @@ def main():
                     logging.info(f"Tiempo total desde envío hasta confirmación: {elapsed:.2f}s")
                     store_results_locally(response)
                     
+                except RuntimeError as e:
+                    # RuntimeError es lanzado cuando el usuario cancela con Ctrl+C
+                    if "detenido por usuario" in str(e):
+                        logging.info("Recepción de respuesta cancelada por el usuario")
+                    else:
+                        logging.error(f"Error: {e}")
                 except Exception as e:
                    logging.error(f"No se pudo recibir respuesta del servidor: {e}", exc_info=True)
             else:
