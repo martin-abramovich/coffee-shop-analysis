@@ -2,11 +2,11 @@ import socket
 import threading
 
 class Client:
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, stop_event: threading.Event):
         self.host = host
         self.port = port
         self.sock = None
-        self._shutdown_requested = False
+        self.stop_event = stop_event
         self._lock = threading.Lock()
 
     def connect(self):
@@ -17,15 +17,20 @@ class Client:
     def send_batch(self, batch):
         """
         Envía un batch de entidades del mismo tipo usando el protocolo binario.
+        Retorna True si se envió exitosamente, False si se canceló por stop_event.
+        Lanza excepciones de red si falla la comunicación.
         """
         with self._lock:
-            if self._shutdown_requested:
-                raise RuntimeError("Cliente en proceso de cierre.")
+            if self.stop_event.is_set():
+                return False
             
             if not self.sock:
                 raise RuntimeError("Cliente no conectado. Llama connect() primero.")
             
+            # sendall() maneja short writes automáticamente
+            # pero puede lanzar excepciones que el caller debe manejar
             self.sock.sendall(batch)
+            return True
 
 
     def receive_response(self) -> str:
@@ -34,7 +39,7 @@ class Client:
         Asumimos que el servidor envía primero 4 bytes (header) con el tamaño del mensaje.
         """
         with self._lock:
-            if self._shutdown_requested:
+            if self.stop_event.is_set():
                 raise RuntimeError("Cliente en proceso de cierre.")
                 
             if not self.sock:
@@ -61,12 +66,6 @@ class Client:
             buf += chunk
         return buf
 
-    def request_shutdown(self):
-        """Solicita el cierre ordenado del cliente"""
-        with self._lock:
-            self._shutdown_requested = True
-            print("\n🔄 Solicitud de cierre recibida. Cerrando conexión...")
-
     def close(self):
         """Cierra la conexión"""
         with self._lock:
@@ -80,11 +79,6 @@ class Client:
                 finally:
                     self.sock.close()
                     self.sock = None
-
-    def is_shutdown_requested(self) -> bool:
-        """Verifica si se solicitó el cierre"""
-        with self._lock:
-            return self._shutdown_requested
 
 
     def __enter__(self):

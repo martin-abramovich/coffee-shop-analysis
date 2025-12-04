@@ -1,3 +1,4 @@
+import argparse
 import logging
 import json
 import csv
@@ -14,7 +15,6 @@ import queue
 import time
 
 # Variable global para el cliente (necesario para signal handler)
-global_client = None
 DEFAULT_RESULTS_DIR = Path(os.environ.get("CLIENT_RESULTS_DIR", "./results"))
 
 def setup_logging(level: str):
@@ -26,23 +26,20 @@ def setup_logging(level: str):
     )
 
     
-def signal_handler(signum, frame):
+def signal_handler(signum, frame, stop_event: threading.Event):
     """
     Maneja las señales SIGTERM e SIGINT para graceful shutdown
     """
     signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
-    logging.info(f"\nSeñal {signal_name} recibida. Iniciando cierre ordenado...")
+    logging.warning(f"Señal {signal_name} recibida. Iniciando cierre ordenado...")
     
-    if global_client:
-        global_client.request_shutdown()
+    stop_event.set()
     
-    logging.info("Cliente terminado por señal del sistema.")
-    sys.exit(0)
 
-def setup_signal_handlers():
+def setup_signal_handlers(stop_event: threading.Event):
     """Configura los manejadores de señales"""
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, lambda s, f: signal_handler(s, f, stop_event))
+    signal.signal(signal.SIGINT, lambda s, f: signal_handler(s, f, stop_event)) # Ctrl+C
     
     logging.info("Manejadores de señales configurados (SIGTERM, SIGINT)")
 
@@ -199,7 +196,7 @@ def csv_reader_transacctions_thread(base_path: str, batch_size: int, data_queue:
                     
                     data_queue.put(('batch', batch))
                     batch_count += 1
-                    batch_id[0] += 1 
+                    batch_id[0] += 1
                     
                     if batch_count <= 3 or batch_count % 10000 == 0:
                         logging.debug(f"Batches leídos: {batch_count}, entidades en último: {len(batch)}")
@@ -284,7 +281,7 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
     total_entities_sent = 0
     count_read_threads = 0 
     try:
-        while not stop_event.is_set():
+        while True:
             try:
                 # Esperar por datos con timeout
                 item = data_queue.get(timeout=1.0)
@@ -299,42 +296,42 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                     continue
                 elif item[0] == 'batch':
                     _, batch = item
-                    if client.is_shutdown_requested():
-                        logging.warning("Cierre solicitado durante envío")
-                        break
-                                        
-                    client.send_batch(batch)
-                    total_batches_sent += 1
-                    total_entities_sent += len(batch)
                     
-                    if total_batches_sent <=  3 or total_batches_sent % 10000 == 0:
-                        logging.debug(f"Enviados {total_batches_sent} batches, entidades en último: {len(batch)}")
+                    # Intentar enviar el batch
+                    # send_batch() retorna False si se canceló, True si se envió, o lanza excepción si falló
+                    sent = client.send_batch(batch)
+                    
+                    if sent:
+                        total_batches_sent += 1
+                        total_entities_sent += len(batch)
+                        
+                        if total_batches_sent <=  3 or total_batches_sent % 10000 == 0:
+                            logging.debug(f"Enviados {total_batches_sent} batches, entidades en último: {len(batch)}")
+                    else:
+                        logging.debug("Envío cancelado por stop_event, finalizando...")
                     
                     data_queue.task_done()
                 
             except queue.Empty:
                 continue
             except Exception as e:
-                logging.error(f"Error enviando batch: {e}", exc_info=True)
-                if isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ConnectionError, OSError)):
+                logging.debug(f"Error enviando batch: {e}", exc_info=True)
+                if isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ConnectionError, OSError, ConnectionResetError)):
                     logging.error("La conexión con el gateway se cerró; deteniendo envío.")
                     stop_event.set()
-                    client.request_shutdown()
-                    break
                 continue
         logging.info(f"Hilo enviador terminado. Total enviado: {total_batches_sent} batches, {total_entities_sent} entidades")
     except Exception as e:
         logging.error(f"Error crítico en hilo enviador: {e}", exc_info=True)
 
-def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
+def read_and_send_threaded(base_path: str, batch_size: int, client: Client, stop_event: threading.Event):
     """
     Coordina la lectura y envío usando dos threads separados.
     """
     logging.info(f"Iniciando procesamiento con threading para archivos")
     
     # Cola para comunicar entre threads
-    data_queue = queue.Queue(maxsize=50)  # Limitar tamaño para evitar usar mucha memoria
-    stop_event = threading.Event()
+    data_queue = queue.Queue(maxsize=150)  # Limitar tamaño para evitar usar mucha memoria
     
     # Crear threads
     reader_thread = threading.Thread(
@@ -376,21 +373,6 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
         
         
         logging.info("Procesamiento threaded completado")
-        
-    except KeyboardInterrupt:
-        logging.warning("\nInterrupción detectada, cerrando threads...")
-        stop_event.set()
-        client.request_shutdown()
-        
-        # Esperar a que los threads terminen
-        reader_thread.join(timeout=5)
-        sender_thread_obj.join(timeout=5)
-        reader_trans_thread.join(timeout=5)
-        reader_users_thread.join(timeout=5)
-        
-        logging.warning("Threads cerrados por interrupción")
-        raise
-    
     except Exception as e:
         logging.error(f"Error en procesamiento threaded: {e}")
         stop_event.set()
@@ -398,10 +380,8 @@ def read_and_send_threaded(base_path: str, batch_size: int, client: Client):
 
 
 def main():
-    global global_client
     
     # Parsear argumentos de línea de comandos
-    import argparse
     parser = argparse.ArgumentParser(description='Cliente para análisis de coffee shop')
     parser.add_argument('--data-folder', '-d', 
                        help='Subcarpeta dentro de .data de donde leer los archivos (ej: dataset1, dataset2)')
@@ -409,8 +389,8 @@ def main():
                        help='Archivo de configuración (default: config.ini)')
     
     args = parser.parse_args()
-    
-    
+    stop_event = threading.Event()
+        
     try:
         # Cargar configuración
         config = load_config(args.config, args.data_folder)
@@ -419,7 +399,7 @@ def main():
         setup_logging(config['log_level'])
         
         # Configurar manejadores de señales
-        setup_signal_handlers()
+        setup_signal_handlers(stop_event)
         
         dataset_path = config['dataset_path']
         host = config['host']
@@ -430,15 +410,14 @@ def main():
             f"Configuración cargada: dataset={dataset_path}, servidor={host}:{port}, batch_size={batch_size}")
         
         start_time = time.time()
-        with Client(host, port) as client:
-            global_client = client  # Asignar para signal handler
+        with Client(host, port, stop_event) as client:
             logging.info(f"Iniciando cliente. Conectado al servidor en {host}:{port}")
             
             # Procesar archivos CSV usando threading
-            read_and_send_threaded(dataset_path, batch_size, client)
+            read_and_send_threaded(dataset_path, batch_size, client, stop_event)
             
             # Opcional: recibir respuesta final del servidor (solo si no hay cierre pendiente)
-            if not client.is_shutdown_requested():
+            if not stop_event.is_set():
                 try:
                     logging.info("Esperando respuesta del servidor...")
                     response = client.receive_response()
@@ -446,12 +425,17 @@ def main():
                     logging.info(f"Tiempo total desde envío hasta confirmación: {elapsed:.2f}s")
                     store_results_locally(response)
                     
+                except RuntimeError as e:
+                    # RuntimeError es lanzado cuando el usuario cancela con Ctrl+C
+                    if "detenido por usuario" in str(e):
+                        logging.info("Recepción de respuesta cancelada por el usuario")
+                    else:
+                        logging.error(f"Error: {e}")
                 except Exception as e:
                    logging.error(f"No se pudo recibir respuesta del servidor: {e}", exc_info=True)
             else:
                 logging.info("Omitiendo recepción de respuesta por cierre solicitado")
         
-        global_client = None
         logging.info("Cliente terminó el procesamiento.")
         
     except KeyboardInterrupt:

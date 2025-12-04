@@ -162,6 +162,7 @@ class MonitorCommunication:
         
         host, port = target
         
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2.0)  # Timeout corto para no bloquear
@@ -176,7 +177,6 @@ class MonitorCommunication:
             
             # Enviar mensaje
             sock.sendall(message_bytes)
-            sock.close()
             return True
             
         except socket.timeout:
@@ -185,6 +185,12 @@ class MonitorCommunication:
         except Exception as e:
             logger.debug(f"[Monitor {self.monitor_id}] Error enviando a monitor {target_id}: {e}")
             return False
+        finally:
+            if sock:
+                try:
+                    sock.close()
+                except:
+                    pass
     
     def broadcast_to_higher(self, message_type: MessageType, data: Optional[Dict] = None) -> List[int]:
         """
