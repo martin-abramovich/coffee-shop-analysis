@@ -7,7 +7,6 @@ import shutil
 import time
 import traceback
 
-logger = logging.getLogger(__name__)
 
 FINISH_FILE_NAME = "finish"
 
@@ -34,7 +33,7 @@ def merge_list(base_data, new_chunk):
 
 
 class SessionStateManager:
-    def __init__(self, data_type_configs = None, base_dir="./state"):
+    def __init__(self, logger, data_type_configs = None, base_dir="./state"):
         """
         Inicializa State Manager, para la persisitencia de los datos.\n 
         - data_type_configs: es un diccionario con la configuracion para 
@@ -51,6 +50,8 @@ class SessionStateManager:
             os.makedirs(self.base_dir)
         
         self.data_type_configs = data_type_configs
+        
+        self.logger = logger
             
     def save_type_state(self, session_id, data_type, aggregator_data, tracker_data):
         """
@@ -80,7 +81,7 @@ class SessionStateManager:
             os.replace(temp_filename, filename)
             
         except Exception as e:
-            logger.error(f"Error guardando {data_type} para sesión {session_id}: {e}")
+            self.logger.error(f"Error guardando {data_type} para sesión {session_id}: {e}")
     
     def save_type_state_add(self, session_id, data_type, aggregator_data, tracker_data):
         # Estructura: ./data/sessions/{session_id}/{data_type}
@@ -127,7 +128,7 @@ class SessionStateManager:
             os.replace(temp_info, info_filename)
         except Exception as e:
             # Si esto falla, la data en aggregator es "basura huérfana" que limpiaremos al leer
-            logger.error(f"Fallo actualizando tracker, estado inconsistente pero recuperable: {e}")
+            self.logger.error(f"Fallo actualizando tracker, estado inconsistente pero recuperable: {e}")
 
     def _truncate_file(self, filepath, size):
         try:
@@ -156,9 +157,9 @@ class SessionStateManager:
             # Escribimos el timestamp como texto simple (más fácil de depurar)
             with open(finish_file_path, 'w') as f:
                 f.write(str(current_timestamp))
-            logger.info(f"Sesión {session_id} marcada como finalizada en {current_timestamp}")
+            self.logger.info(f"Sesión {session_id} marcada como finalizada en {current_timestamp}")
         except Exception as e:
-            logger.error(f"Error marcando sesión {session_id} como finalizada: {e}")
+            self.logger.error(f"Error marcando sesión {session_id} como finalizada: {e}")
     
     def delete_finish_session(self, expiration_seconds):
         """
@@ -175,7 +176,7 @@ class SessionStateManager:
         # Tiempo límite de expiración
         expire_before = current_time - expiration_seconds
         
-        logger.info(f"Buscando sesiones para borrar (Inactivas o Finalizadas expiradas: {expiration_seconds}s).")
+        self.logger.info(f"Buscando sesiones para borrar (Inactivas o Finalizadas expiradas: {expiration_seconds}s).")
         
         # Nueva lista para almacenar los IDs eliminados por inactividad
         inactive_deleted_ids = []
@@ -196,11 +197,11 @@ class SessionStateManager:
                         finish_timestamp = float(f.read().strip())
                     
                     if finish_timestamp < expire_before:
-                        logger.info(f"Sesión {session_id} [FINALIZADA] expirada ({finish_timestamp:.2f}). Eliminando...")
+                        self.logger.info(f"Sesión {session_id} [FINALIZADA] expirada ({finish_timestamp:.2f}). Eliminando...")
                         self.delete_session(session_id)
                     
                 except (IOError, ValueError, Exception) as e:
-                    logger.warning(f"Error procesando FINISH_TIMESTAMP para sesión {session_id}. Podría estar corrupto: {e}")
+                    self.logger.warning(f"Error procesando FINISH_TIMESTAMP para sesión {session_id}. Podría estar corrupto: {e}")
             
             # --- LÓGICA 2: SESIÓN ACTIVA ABANDONADA (Inactividad) ---
             else:
@@ -208,7 +209,7 @@ class SessionStateManager:
                     latest_mtime = self._get_latest_mtime(session_dir)
                     
                     if latest_mtime < expire_before:
-                        logger.warning(f"Sesión {session_id} [INACTIVA] detectada. Última modif.: {latest_mtime:.2f}. Eliminando...")
+                        self.logger.warning(f"Sesión {session_id} [INACTIVA] detectada. Última modif.: {latest_mtime:.2f}. Eliminando...")
                         
                         self.delete_session(session_id) 
                         
@@ -216,7 +217,7 @@ class SessionStateManager:
                         inactive_deleted_ids.append(session_id)
                         
                 except Exception as e:
-                    logger.error(f"Error verificando mtime para sesión inactiva {session_id}: {e}")
+                    self.logger.error(f"Error verificando mtime para sesión inactiva {session_id}: {e}")
         
         return inactive_deleted_ids
     
@@ -230,14 +231,14 @@ class SessionStateManager:
             int: El número de sesiones que fueron marcadas como finalizadas.
         """
         if not os.path.exists(self.base_dir):
-            logger.info("Directorio base no existe. 0 sesiones para finalizar.")
+            self.logger.info("Directorio base no existe. 0 sesiones para finalizar.")
             return 0
         
         finished_count = 0
         
         session_dirs = [d for d in os.listdir(self.base_dir) if os.path.isdir(os.path.join(self.base_dir, d))]
         
-        logger.info(f"Iniciando el marcado de {len(session_dirs)} directorios de sesión para el apagado.")
+        self.logger.info(f"Iniciando el marcado de {len(session_dirs)} directorios de sesión para el apagado.")
         
         for s_id in session_dirs:
             session_dir = os.path.join(self.base_dir, s_id)
@@ -251,9 +252,9 @@ class SessionStateManager:
                 finished_count += 1
                 
             except Exception as e:
-                logger.error(f"Error al intentar marcar sesión {s_id} como finalizada durante el apagado: {e}")
+                self.logger.error(f"Error al intentar marcar sesión {s_id} como finalizada durante el apagado: {e}")
 
-        logger.info(f"Cierre ordenado completado. Se marcaron {finished_count} sesiones como finalizadas.")
+        self.logger.info(f"Cierre ordenado completado. Se marcaron {finished_count} sesiones como finalizadas.")
     
     def delete_session(self, session_id):
         """
@@ -264,7 +265,7 @@ class SessionStateManager:
             if os.path.exists(session_dir):
                 shutil.rmtree(session_dir) # Borra carpeta y todo su contenido
         except OSError as e:
-            logger.warning(f"No se pudo borrar directorio de sesión {session_id}: {e}")
+            self.logger.warning(f"No se pudo borrar directorio de sesión {session_id}: {e}")
     
     def _get_latest_mtime(self, session_dir):
         """
@@ -314,14 +315,14 @@ class SessionStateManager:
         # Listar todas las carpetas de sesiones (IDs numéricos o strings)
         session_dirs = [d for d in os.listdir(self.base_dir) if os.path.isdir(os.path.join(self.base_dir, d))]
         
-        logger.info(f"Recuperando {len(session_dirs)} sesiones del disco...")
+        self.logger.info(f"Recuperando {len(session_dirs)} sesiones del disco...")
 
         for s_id in session_dirs:
             s_path = os.path.join(self.base_dir, s_id)
             finish_file_path = os.path.join(s_path, FINISH_FILE_NAME)
             
             if os.path.exists(finish_file_path):
-                logger.debug(f"Sesión {s_id} marcada como finalizada. No se carga el estado.")
+                self.logger.debug(f"Sesión {s_id} marcada como finalizada. No se carga el estado.")
                 finished_sessions.add(s_id)
                 continue
             
@@ -342,7 +343,7 @@ class SessionStateManager:
                             aggregator_map[s_id][data_type] = agg_data
                             tracker_map[s_id][data_type] = track_data
                     except Exception as e:
-                         logger.error(f"Error cargando carpeta {item_path}: {e}")
+                         self.logger.error(f"Error cargando carpeta {item_path}: {e}")
 
                 # --- CASO B: ES UN ARCHIVO (Lógica Simple Update) ---
                 elif item_name.endswith(".pkl") and not item_name.endswith(".tmp"):
@@ -356,7 +357,7 @@ class SessionStateManager:
                         tracker_map[s_id][data_type] = state[idx['tracker']]
                         
                     except Exception as e:
-                        logger.error(f"Archivo simple corrupto {item_path}: {e}")
+                        self.logger.error(f"Archivo simple corrupto {item_path}: {e}")
         
         return aggregator_map, tracker_map, finished_sessions
 
@@ -381,7 +382,7 @@ class SessionStateManager:
                 # Tupla guardada: (size_bytes, tracker_data)
                 valid_size, tracker_data = pickle.load(f)
         except Exception:
-            logger.error(f"Info corrupta en {dir_path}, omitiendo.")
+            self.logger.error(f"Info corrupta en {dir_path}, omitiendo.")
             return None, None
 
         # 3. Leer DATA con validación de tamaño
@@ -394,7 +395,7 @@ class SessionStateManager:
             # --- AUTO-REPARACIÓN ---
             # Si el archivo data es mayor que lo que dice el tracker, hubo un crash escribiendo.
             if current_size > valid_size:
-                logger.warning(f"Inconsistencia detectada en {dir_path}. Real: {current_size}, Valido: {valid_size}. Truncando...")
+                self.logger.warning(f"Inconsistencia detectada en {dir_path}. Real: {current_size}, Valido: {valid_size}. Truncando...")
                 self._truncate_file(data_path, valid_size)
             
             # 4. Loop de lectura de objetos apilados
@@ -408,12 +409,12 @@ class SessionStateManager:
                             if isinstance(chunk, dict) or isinstance(chunk, list):
                                 full_aggregator_data = merge_func(full_aggregator_data, chunk)
                             else:
-                                logger.warning(f"Chunk inesperado encontrado en {data_path}. Esperado dict or list, encontrado {type(chunk)}.")    
+                                self.logger.warning(f"Chunk inesperado encontrado en {data_path}. Esperado dict or list, encontrado {type(chunk)}.")    
                                 
                         except EOFError:
                             break
             except Exception as e:
-                logger.error(f"Error leyendo flujo de datos en {data_path}: {e}")
-                logger.error(traceback.format_exc())
+                self.logger.error(f"Error leyendo flujo de datos en {data_path}: {e}")
+                self.logger.error(traceback.format_exc())
                 
         return full_aggregator_data, tracker_data

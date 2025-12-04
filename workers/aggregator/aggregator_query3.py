@@ -37,7 +37,7 @@ class AggregatorQuery3:
         
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(tracked_types=["tpv", "stores"])
-        self.state_manager = SessionStateManager()
+        self.state_manager = SessionStateManager(logger=logger)
         self.finish_sessions = set()
         
         #in
@@ -303,7 +303,8 @@ class AggregatorQuery3:
         "Iniciar servidor de healthcheck UDP"
         
         healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
-        start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query3", shutdown_event=self.shutdown_event)
+        start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query3",
+                                 shutdown_event=self.shutdown_event, logger=logger)
         logger.info(f"[AggregatorQuery3] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
     def __init_delete_sessions(self):

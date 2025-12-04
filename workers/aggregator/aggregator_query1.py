@@ -39,7 +39,7 @@ class AggregatorQuery1:
         self.session_data_lock = threading.Lock()
         self.total_received = 0
         self.session_tracker = SessionTracker(["transactions"])
-        self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER)
+        self.state_manager = SessionStateManager(logger, DEFAULT_DATA_CONFIGS_STATE_MANAGER)
         self.finish_sessions = set()
         
         self.shutdown_event = threading.Event()
@@ -75,30 +75,30 @@ class AggregatorQuery1:
         # Log solo cada 1000 transacciones recibidas
         if self.total_received % 10000 < len(rows):
             total_accumulated = sum(len(data['transactions']) for data in self.session_data.values())
-            logger.debug(f"[AggregatorQuery1] Total acumulado: {total_accumulated}/{self.total_received} (sesiones: {len(self.session_data)})")
+            logger.debug(f" Total acumulado: {total_accumulated}/{self.total_received} (sesiones: {len(self.session_data)})")
     
         return new_transactions
     
     def __generate_final_results(self, session_id):
         """Genera los resultados finales para Query 1 de una sesión específica."""
         
-        logger.info(f"[AggregatorQuery1] Generando resultados finales para sesión {session_id}...")
+        logger.info(f" Generando resultados finales para sesión {session_id}...")
         
         if session_id not in self.session_data:
-            logger.warning(f"[AggregatorQuery1] No hay datos para sesión {session_id}")
+            logger.warning(f" No hay datos para sesión {session_id}")
             return []
         
         session_info = self.session_data[session_id]
         results = session_info['transactions']
         
         if not results:
-            logger.warning(f"[AggregatorQuery1] No hay transacciones válidas para reportar en sesión {session_id}")
+            logger.warning(f" No hay transacciones válidas para reportar en sesión {session_id}")
             return []
         
         # Ordenar por transaction_id para consistencia
         results.sort(key=lambda x: x['transaction_id'])
         
-        logger.info(f"[AggregatorQuery1] Resultados generados para sesión {session_id}: {len(results)} transacciones")
+        logger.info(f" Resultados generados para sesión {session_id}: {len(results)} transacciones")
             
         return results
     
@@ -135,10 +135,10 @@ class AggregatorQuery1:
                     
                 self.results_queue.send(result_msg)
             
-        logger.info(f"[AggregatorQuery1] Resultados finales enviados para sesión {session_id}.")
+        logger.info(f" Resultados finales enviados para sesión {session_id}.")
     
     def __signal_handler(self, signum, frame):
-        logger.info(f"[AggregatorQuery1] Señal {signum} recibida, cerrando...")
+        logger.info(f" Señal {signum} recibida, cerrando...")
         self.shutdown_event.set()
         try:
             self.amount_trans_queue.stop_consuming()
@@ -160,8 +160,9 @@ class AggregatorQuery1:
         "Inicia servidor de healthcheck UDP"
         
         healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
-        start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query1", shutdown_event=self.shutdown_event)
-        logger.info(f"[AggregatorQuery1] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
+        start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query1", 
+                                 shutdown_event=self.shutdown_event, logger=logger)
+        logger.info(f" Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
     def __finish_session(self, session_id):
         """Marca una sesión como finalizada"""
@@ -206,7 +207,7 @@ class AggregatorQuery1:
                 self.__save_session_add(session_id, new_transactions)
         
         except Exception as e: 
-            logger.error(f"[AggregatorQuery1] Error procesando el mensaje de transactions: {e}")
+            logger.error(f" Error procesando el mensaje de transactions: {e}")
             logger.error(traceback.format_exc())
             
     def __load_sessions_data(self, data):
@@ -217,15 +218,15 @@ class AggregatorQuery1:
                 }
     
     def __load_sessions(self):
-        logger.info("[*] Intentando recuperar estado previo...")
+        logger.info("Intentando recuperar estado previo...")
         saved_data, saved_tracker, finish_sessions = self.state_manager.load_all_sessions()
         
         if saved_data and saved_tracker:
             self.session_tracker.load_state_snapshot(saved_tracker)
             self.__load_sessions_data(saved_data)
-            logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
+            logger.info(f"Estado recuperado. Sesiones activas: {len(self.session_data)}")
         else:
-            logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
+            logger.info("No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
         
         self.finish_sessions = finish_sessions
     
@@ -236,7 +237,7 @@ class AggregatorQuery1:
         Inicializa y comienza el hilo de fondo para la limpieza periódica 
         de sesiones expiradas.
         """
-        logger.info(f"[*] Inicializando limpieza periódica de sesiones...")
+        logger.info(f"Inicializando limpieza periódica de sesiones...")
         
         self.delete_thread = threading.Thread(
             target=delete_sessions_thread,
@@ -254,19 +255,19 @@ class AggregatorQuery1:
         
         self.__load_sessions()
             
-        logger.info("[*] AggregatorQuery1 esperando mensajes...")
-        logger.info("[*] Query 1: Transacciones 2024-2025, 06:00-23:00, monto >= 75")
-        logger.info("[*] Columnas output: transaction_id, final_amount")
+        logger.info("Esperando mensajes...")
+        logger.info("Query 1: Transacciones 2024-2025, 06:00-23:00, monto >= 75")
+        logger.info("Columnas output: transaction_id, final_amount")
         
         try:
             self.amount_trans_queue.start_consuming(self.__on_message)    
         except KeyboardInterrupt:
-            logger.info("\n[AggregatorQuery1] Interrupción recibida")
+            logger.info("Interrupción recibida")
             self.shutdown_event.set()
         finally: 
             self.__close_middleware() 
             self.__close_delete_session()
-            logger.info("[x] AggregatorQuery1 detenido")
+            logger.info("Detenido")
 
 
 

@@ -16,7 +16,7 @@ DEFAULT_HEALTHCHECK_PORT = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
 HEALTH_RESPONSE = b"OK"
 
 
-def start_healthcheck_server(port=None, node_name="node", shutdown_event=None):
+def start_healthcheck_server(port=None, node_name="node", shutdown_event=None, logger=logger):
     """
     Inicia un servidor UDP que responde a healthchecks.
     
@@ -43,33 +43,33 @@ def start_healthcheck_server(port=None, node_name="node", shutdown_event=None):
             sock.bind(('0.0.0.0', port))
             sock.settimeout(1.0)  # Timeout para poder verificar shutdown_event periódicamente
             
-            logger.info(f"[{node_name}] Healthcheck UDP server iniciado en puerto {port}")
+            logger.info(f"Healthcheck UDP server iniciado en puerto {port}")
             
             while not shutdown_event.is_set():
                 try:
                     data, addr = sock.recvfrom(1024)
                     # Responder con mensaje de salud
                     sock.sendto(HEALTH_RESPONSE, addr)
-                    logger.debug(f"[{node_name}] Healthcheck respondido a {addr}")
+                    logger.debug(f"Healthcheck respondido a {addr}")
                 except socket.timeout:
                     # Timeout normal, continuar loop para verificar shutdown_event
                     continue
                 except Exception as e:
                     if not shutdown_event.is_set():
-                        logger.error(f"[{node_name}] Error en healthcheck server: {e}")
+                        logger.error(f"Error en healthcheck server: {e}")
                     continue
             
-            logger.info(f"[{node_name}] Healthcheck UDP server deteniéndose...")
+            logger.info(f"Healthcheck UDP server deteniéndose...")
             
         except Exception as e:
-            logger.error(f"[{node_name}] Error iniciando healthcheck server: {e}")
+            logger.error(f"Error iniciando healthcheck server: {e}")
         finally:
             if sock:
                 try:
                     sock.close()
                 except:
                     pass
-            logger.info(f"[{node_name}] Healthcheck UDP server cerrado")
+            logger.info(f"Healthcheck UDP server cerrado")
     
     thread = threading.Thread(target=healthcheck_listener, name=f"Healthcheck-{node_name}", daemon=True)
     thread.start()

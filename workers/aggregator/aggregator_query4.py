@@ -79,7 +79,7 @@ class AggregatorQuery4:
         
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(["transactions", "stores", "users"])
-        self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER)
+        self.state_manager = SessionStateManager(logger, DEFAULT_DATA_CONFIGS_STATE_MANAGER)
         self.finish_sessions = set()
         
         #in 
@@ -425,7 +425,8 @@ class AggregatorQuery4:
         "Iniciar servidor de healthcheck UDP"
         
         healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
-        start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query4", shutdown_event=self.shutdown_event)
+        start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query4", 
+                                 shutdown_event=self.shutdown_event, logger=logger)
         
         logger.info(f"[AggregatorQuery4] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
         
