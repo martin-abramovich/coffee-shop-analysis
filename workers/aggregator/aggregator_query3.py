@@ -156,36 +156,29 @@ class AggregatorQuery3:
         final_results = self.__generate_final_results(session_id)
 
         if final_results:
-            # Enviar resultados finales con headers completos
-            results_header = {
-                "type": "result",
-                "stream_id": "query3_results",
-                "batch_id": "final",
-                "is_batch_end": "true",
-                "is_eos": "false",
-                "query": "query3",
-                "session_id": session_id,
-                "total_results": str(len(final_results)),
-                "description": "TPV_por_semestre_y_sucursal_2024-2025_06:00-23:00",
-                "is_final_result": "true"
-            }
-            
-            # Enviar en batches si hay muchos resultados
             batch_size = 1000
             total_batches = (len(final_results) + batch_size - 1) // batch_size
+            mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
             
-            results_exchange = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
             
             for i in range(0, len(final_results), batch_size):
+                batch_id = i // batch_size + 1
                 batch = final_results[i:i + batch_size]
-                batch_header = results_header.copy()
-                batch_header["batch_number"] = str((i // batch_size) + 1)
-                batch_header["total_batches"] = str(total_batches)
-                
-                result_msg = serialize_message(batch, batch_header)
-                results_exchange.send(result_msg)
 
-            results_exchange.close()
+                batch_header = {
+                    "batch_id": batch_id,
+                    "is_eos": batch_id == total_batches,
+                    "session_id": session_id,
+                }
+
+                result_msg = serialize_message(batch, batch_header)
+
+                mq_out.send(result_msg)
+            
+            mq_out.close()
+        else:
+            logger.warning("[AggregatorQuery3] No hay resultados para enviar")
+            
             
         logger.info(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
     

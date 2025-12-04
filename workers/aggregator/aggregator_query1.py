@@ -105,37 +105,28 @@ class AggregatorQuery1:
     def __send_results(self, session_id):
         final_results = self.__generate_final_results(session_id)
 
-        if final_results:
-                # Enviar resultados finales
-            results_header = {
-                    "type": "result",
-                    "stream_id": f"query1_results_{session_id}",
-                    "batch_id": f"final_{session_id}",
-                    "is_batch_end": "true",
-                    "is_eos": "false",
-                    "query": "query1",
-                    "total_results": str(len(final_results)),
-                    "description": "Transacciones_2024-2025_06:00-23:00_monto>=75",
-                    "columns": "transaction_id:final_amount",
-                    "is_final_result": "true",
-                    "session_id": session_id
-                }
-                
-                # Enviar en batches si hay muchos resultados
-            batch_size = 1000
-            total_batches = (len(final_results) + batch_size - 1) // batch_size
-                
-            for i in range(0, len(final_results), batch_size):
-                batch = final_results[i:i + batch_size]
-                batch_header = results_header.copy()
-                batch_header["batch_number"] = str((i // batch_size) + 1)
-                batch_header["total_batches"] = str(total_batches)
-                    
-                result_msg = serialize_message(batch, batch_header)
-                    
-                self.results_queue.send(result_msg)
-            
-        logger.info(f" Resultados finales enviados para sesión {session_id}.")
+        if not final_results:
+            logger.info(f"No hay resultados para sesión {session_id}.")
+            return
+
+        batch_size = 1000
+        total_batches = (len(final_results) + batch_size - 1) // batch_size
+
+        for i in range(0, len(final_results), batch_size):
+            batch_id = i // batch_size + 1
+            batch = final_results[i:i + batch_size]
+
+            batch_header = {
+                "batch_id": batch_id,
+                "is_eos": batch_id == total_batches,
+                "session_id": session_id,
+            }
+
+            result_msg = serialize_message(batch, batch_header)
+
+            self.results_queue.send(result_msg)
+
+        logger.info(f"Resultados finales enviados para sesión {session_id}.")
     
     def __signal_handler(self, signum, frame):
         logger.info(f" Señal {signum} recibida, cerrando...")

@@ -7,6 +7,7 @@ import sys
 import os
 import threading
 from collections import defaultdict
+import traceback
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from middleware.middleware import MessageMiddlewareExchange
@@ -25,23 +26,22 @@ RESULT_EXCHANGES = {
 }
 
 class ResultsHandler:
-    def __init__(self, output_dir):
-        self.output_dir = output_dir
+    def __init__(self):
+        
         # Ahora results es un diccionario anidado: {session_id: {query_name: [rows]}}
         self.results = defaultdict(lambda: defaultdict(list))
         # Lock para proteger acceso concurrente a self.results
         self.lock = threading.Lock()
-        print(f"[ResultsHandler] Directorio (deprecated): {self.output_dir}")
+        
     
     def collect_result(self, query_name, rows, header):
-        session_id = header.get('session_id', 'default')
-        
-        # Reducir verbosidad: mostrar solo conteo y batch
-        print(f"[ResultsHandler] {query_name} (sesión {session_id}): filas={len(rows)} batch={header.get('batch_number', '?')}/{header.get('total_batches', '?')}")
-        
-        if header.get('is_final_result') == 'true':
-            batch_num = header.get('batch_number', '?')
-            total_batches = header.get('total_batches', '?')
+        try:
+            session_id = header.get('session_id', 'default')
+            
+            # Reducir verbosidad: mostrar solo conteo y batch
+            print(f"[ResultsHandler] {query_name} (sesión {session_id}): filas={len(rows)}")
+            
+            is_eos = header.get('is_eos')
             
             # Proteger acceso concurrente a self.results
             with self.lock:
@@ -49,13 +49,13 @@ class ResultsHandler:
                 self.results[session_id][query_name].extend(rows)
                 current_count = len(self.results[session_id][query_name])
             
-            print(f"[ResultsHandler] {query_name} (sesión {session_id}): Batch {batch_num}/{total_batches} acumulado={current_count}")
             
-            if batch_num == total_batches:
-                print(f"[ResultsHandler] Último batch recibido para {query_name} (sesión {session_id}), despachando resultados al cliente...")
+            if is_eos:
+                print(f"[ResultsHandler] Último batch recibido para {query_name} (sesión {session_id})")
                 self.dispatch_results(query_name, header, session_id)
-        else:
-            print(f"[ResultsHandler] Mensaje ignorado - is_final_result={header.get('is_final_result')}")
+        except Exception as e:
+            print(f"[ResultsHandler] Error al recolectar resultado para {query_name}: {e}")
+            print(traceback.format_exc())
     
     def dispatch_results(self, query_name, header, session_id):
         # Proteger lectura de results con lock
@@ -71,19 +71,11 @@ class ResultsHandler:
             return
         
         columns = self._resolve_columns(header, results_list)
-        metadata = {
-            'batch_number': header.get('batch_number'),
-            'total_batches': header.get('total_batches'),
-            'description': header.get('description'),
-            'total_results': header.get('total_results'),
-            'stream_id': header.get('stream_id'),
-        }
+       
 
         payload = {
-            'query': query_name,
             'columns': columns,
             'rows': results_list,
-            'metadata': metadata,
         }
 
         result_dispatcher.submit_result(session_id, query_name, payload)
@@ -109,16 +101,14 @@ class ResultsHandler:
 
 def start_results_handler(shutdown_event):
     """Inicia el handler de resultados en threads separados"""
-    handler = ResultsHandler(OUTPUT_DIR)
+    handler = ResultsHandler()
     mq_connections = {}
     
     try:
         for query_name, (exchange, routing_key) in RESULT_EXCHANGES.items():
-            print(f"[ResultsHandler] Conectando a exchange: {exchange} con routing_key: {routing_key} para {query_name}")
             mq = MessageMiddlewareExchange(RABBITMQ_HOST, exchange, [routing_key])
             mq_connections[query_name] = mq
         
-        print("[ResultsHandler] Esperando resultados de:", list(RESULT_EXCHANGES.keys()))
         
         def create_consumer(query_name, mq):
             def on_message(body):

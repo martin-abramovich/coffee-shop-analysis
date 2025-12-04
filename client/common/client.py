@@ -12,6 +12,7 @@ class Client:
     def connect(self):
         """Establece conexión con el servidor"""
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(1.0)
         self.sock.connect((self.host, self.port))
 
     def send_batch(self, batch):
@@ -57,12 +58,31 @@ class Client:
             return data.decode("utf-8")
 
     def _recv_exact(self, n: int) -> bytes:
-        """Recibe exactamente n bytes (evita short read)."""
+        """
+        Recibe exactamente n bytes (evita short read).
+        Maneja timeout para revisar el stop_event.
+        """
         buf = b""
         while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
+            if self.stop_event.is_set():
+                # Si el evento de cierre está activado, salimos.
+                raise RuntimeError("Cierre solicitado durante la recepción.")
+                
+            try:
+                # El recv puede lanzar socket.timeout
+                chunk = self.sock.recv(n - len(buf))
+            except socket.timeout:
+                # Si hay timeout, volvemos a la parte superior del bucle
+                # para revisar el stop_event antes de reintentar.
+                continue 
+            except OSError as e:
+                # Capturar otros errores de socket (como ConnectionResetError)
+                raise ConnectionError(f"Error de red durante la recepción: {e}")
+
             if not chunk:
+                # El servidor cerró la conexión
                 raise ConnectionError("Connection closed unexpectedly")
+            
             buf += chunk
         return buf
 

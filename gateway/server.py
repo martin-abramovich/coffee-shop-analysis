@@ -45,7 +45,6 @@ def log_with_timestamp(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     print(f"[{timestamp}] {message}")
 
-from gateway.processor import process_batch_by_type
 from gateway.serializer import serialize_message
 from gateway.result_dispatcher import result_dispatcher
 from gateway.results_handler import RESULT_EXCHANGES
