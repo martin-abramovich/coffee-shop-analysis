@@ -188,7 +188,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--expected-dir",
         type=Path,
         default=None,
-        help="Directorio con CSVs esperados. Si se usa --session-id, default es results/results_expected. Si no, default es results_expected.",
+        help="Directorio con CSVs esperados. Si no se especifica, usa results/results_expected/reduced (o results/results_expected/complete con --complete).",
     )
     parser.add_argument(
         "--session-id",
@@ -233,6 +233,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             "Útil para depurar diferencias reales de contenido."
         ),
     )
+    parser.add_argument(
+        "--complete",
+        action="store_true",
+        help=(
+            "Compara con results/results_expected/complete en lugar de "
+            "results/results_expected/reduced (default)."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -243,12 +251,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Determinar el directorio esperado según si hay session-id o no
     if args.expected_dir is not None:
         expected_dir: Path = args.expected_dir
-    elif session_id:
-        # Si hay session-id, results_expected está en results/results_expected
-        expected_dir = results_dir / "results_expected"
     else:
-        # Si no hay session-id, usar el default original
-        expected_dir = Path("results_expected")
+        # Determinar el path base según si hay session-id o no
+        if session_id:
+            # Si hay session-id, results_expected está en results/results_expected
+            base_expected_dir = results_dir / "results_expected"
+        else:
+            # Si no hay session-id, usar results/results_expected
+            base_expected_dir = results_dir / "results_expected"
+        
+        # Agregar /reduced (default) o /complete según la flag
+        if args.complete:
+            expected_dir = base_expected_dir / "complete"
+        else:
+            expected_dir = base_expected_dir / "reduced"
 
     # Si se especifica session-id, buscar dentro de la carpeta de sesión
     if session_id:
