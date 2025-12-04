@@ -47,9 +47,9 @@ def log_with_timestamp(message):
 
 from gateway.serializer import serialize_message
 from gateway.result_dispatcher import result_dispatcher
-from gateway.results_handler import RESULT_EXCHANGES
+from gateway.results_handler import QUEUES
 
-EXPECTED_RESULT_QUERIES = set(RESULT_EXCHANGES.keys())
+EXPECTED_RESULT_QUERIES = set(QUEUES.keys())
 
 def read_string(data, offset):
     """Lee un string del buffer: 4 bytes de longitud + string"""

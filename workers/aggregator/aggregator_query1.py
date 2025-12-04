@@ -144,7 +144,7 @@ class AggregatorQuery1:
         
     def __init_middleware(self):
         self.amount_trans_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_amount")        
-        self.results_queue = MessageMiddlewareExchange(RABBIT_HOST, 'results_query1', ['query1_results'])
+        self.results_queue = MessageMiddlewareQueue(RABBIT_HOST, 'results_query1')
     
         
     def __init_healthcheck(self):

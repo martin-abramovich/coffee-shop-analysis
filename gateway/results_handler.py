@@ -10,7 +10,7 @@ from collections import defaultdict
 import traceback
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from middleware.middleware import MessageMiddlewareExchange
+from middleware.middleware import MessageMiddlewareExchange, MessageMiddlewareQueue
 from workers.utils import deserialize_message
 from gateway.result_dispatcher import result_dispatcher
 
@@ -18,11 +18,11 @@ RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 OUTPUT_DIR = './results'
 
 # Exchanges de resultados
-RESULT_EXCHANGES = {
-    'query1': ('results_query1', 'query1_results'),
-    'query2': ('results_query2', 'query2_results'),
-    'query3': ('results_query3', 'query3_results'),
-    'query4': ('results_query4', 'query4_results')
+QUEUES = {
+    'query1': ('results_query1'),
+    'query2': ('results_query2'),
+    'query3': ('results_query3'),
+    'query4': ('results_query4'),
 }
 
 class ResultsHandler:
@@ -105,8 +105,8 @@ def start_results_handler(shutdown_event):
     mq_connections = {}
     
     try:
-        for query_name, (exchange, routing_key) in RESULT_EXCHANGES.items():
-            mq = MessageMiddlewareExchange(RABBITMQ_HOST, exchange, [routing_key])
+        for query_name, queue_name in QUEUES.items():
+            mq = MessageMiddlewareQueue(RABBITMQ_HOST, queue_name)
             mq_connections[query_name] = mq
         
         

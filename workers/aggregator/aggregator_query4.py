@@ -30,16 +30,15 @@ DEFAULT_DATA_CONFIGS_STATE_MANAGER = {
     "users":        (dict, merge_replace_dicts),
 }
 
-INPUT_EXCHANGE = "transactions_query4"    # exchange del group_by query 4
-INPUT_ROUTING_KEY = "query4"              # routing key del group_by
-OUTPUT_EXCHANGE = "results_query4"        # exchange de salida para resultados finales
-ROUTING_KEY = "query4_results"            # routing para resultados
 
+GROUP_BY_Q4_QUEUE = "group_by_q4"
 
-# Exchanges adicionales para JOIN
 STORES_EXCHANGE = "stores_raw"
 STORES_ROUTING_KEY = "q4"
+
 USERS_QUEUE = "users_raw"
+
+OUTPUT_QUEUE = "results_query4" 
 
 def int_to_date(ts: int) -> str:
     days = ts // 86400  # días desde 1970-01-01
@@ -251,7 +250,7 @@ class AggregatorQuery4:
         if final_results:
             batch_size = 1000
             total_batches = (len(final_results) + batch_size - 1) // batch_size
-            mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            mq_out = MessageMiddlewareQueue(RABBIT_HOST, OUTPUT_QUEUE)
             
             
             for i in range(0, len(final_results), batch_size):
@@ -385,7 +384,7 @@ class AggregatorQuery4:
             
     def __consume_transactions(self):
         try:
-            self.transactions_queue = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q4")
+            self.transactions_queue = MessageMiddlewareQueue(RABBIT_HOST, GROUP_BY_Q4_QUEUE)
             self.transactions_queue.start_consuming(self.__on_transactions_message)
         except Exception as e:
             if not self.shutdown_event.is_set():

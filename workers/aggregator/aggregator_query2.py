@@ -22,14 +22,10 @@ from common.healthcheck import start_healthcheck_server
 # --- Configuración ---
 RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 
-INPUT_EXCHANGE = "transactions_query2"    # exchange del group_by query 2
-INPUT_ROUTING_KEY = "query2"              # routing key del group_by
-OUTPUT_EXCHANGE = "results_query2"        # exchange de salida para resultados finales
-ROUTING_KEY = "query2_results"            # routing para resultados
+OUTPUT_QUEUE = "results_query2"        # exchange de salida para resultados finales
+GROUP_BY_Q2_QUEUE = "group_by_q2"
 
 # Exchanges adicionales para JOIN
-MENU_ITEMS_EXCHANGE = "menu_items_raw"
-MENU_ITEMS_ROUTING_KEY = "menu_items"
 MENU_ITEMS_QUEUE = "menu_items_raw"
 
 INDEX_METRICS = {
@@ -190,7 +186,7 @@ class AggregatorQuery2:
         if final_results:
             batch_size = 1000
             total_batches = (len(final_results) + batch_size - 1) // batch_size
-            mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            mq_out = MessageMiddlewareQueue(RABBIT_HOST, OUTPUT_QUEUE)
             
             
             for i in range(0, len(final_results), batch_size):
@@ -301,7 +297,7 @@ class AggregatorQuery2:
     
     def consume_metrics(self):
         try:
-            self.mq_metrics = MessageMiddlewareQueue(RABBIT_HOST, "group_by_q2")
+            self.mq_metrics = MessageMiddlewareQueue(RABBIT_HOST, GROUP_BY_Q2_QUEUE)
             self.mq_metrics.start_consuming(self.on_metrics_message)
         except Exception as e:
             if not self.shutdown_event.is_set():

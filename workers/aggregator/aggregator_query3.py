@@ -22,8 +22,7 @@ RABBIT_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')
 
 INPUT_QUEUE = "group_by_q3"    
 
-OUTPUT_EXCHANGE = "results_query3"        
-ROUTING_KEY = "query3_results"            
+OUTPUT_QUEUE = "results_query3"        
 
 STORES_EXCHANGE = "stores_raw"
 STORES_ROUTING_KEY = "q3"
@@ -158,7 +157,7 @@ class AggregatorQuery3:
         if final_results:
             batch_size = 1000
             total_batches = (len(final_results) + batch_size - 1) // batch_size
-            mq_out = MessageMiddlewareExchange(RABBIT_HOST, OUTPUT_EXCHANGE, [ROUTING_KEY])
+            mq_out = MessageMiddlewareQueue(RABBIT_HOST, OUTPUT_QUEUE)
             
             
             for i in range(0, len(final_results), batch_size):
