@@ -120,7 +120,7 @@ if __name__ == "__main__":
         print(f"[GroupByQuery2] Señal {signum} recibida, cerrando...")
         shutdown_event.set()
         try:
-            filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year").stop_consuming()
+            year_trans_item_queue.stop_consuming()
         except Exception as e: 
             print(f"Error al parar el consumo: {e}")
     
@@ -141,7 +141,7 @@ if __name__ == "__main__":
         print("\n[GroupByQuery2] Interrupción recibida")
     finally:
         try:
-            filter_trans_item_queue = MessageMiddlewareQueue(RABBIT_HOST, "transactions_year").close()
+            year_trans_item_queue.close()
         except:
             pass
         try:
