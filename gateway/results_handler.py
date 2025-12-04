@@ -107,7 +107,7 @@ class ResultsHandler:
         # Fallback: usar las claves del primer registro preservando orden de inserción
         return list(results_list[0].keys())
 
-def start_results_handler():
+def start_results_handler(shutdown_event):
     """Inicia el handler de resultados en threads separados"""
     handler = ResultsHandler(OUTPUT_DIR)
     mq_connections = {}
@@ -132,19 +132,22 @@ def start_results_handler():
                 try:
                     mq.start_consuming(on_message)
                 except Exception as e:
-                    print(f"[ResultsHandler] Error consumiendo {query_name}: {e}")
+                    if not shutdown_event.is_set():
+                        print(f"[ResultsHandler] Error consumiendo {query_name}: {e}")
             
             return consume
         
         threads = []
         for query_name, mq in mq_connections.items():
             consumer = create_consumer(query_name, mq)
-            thread = threading.Thread(target=consumer, name=f"Results-{query_name}", daemon=True)
+            thread = threading.Thread(target=consumer, name=f"Results-{query_name}", daemon=False)
             thread.start()
             threads.append(thread)
         
-        # Los threads corren como daemon, no bloqueamos aquí
         print("[ResultsHandler] Threads de resultados iniciados")
+        
+        # Retornar las conexiones para que main.py pueda cerrarlas
+        return mq_connections
         
     except Exception as e:
         print(f"[ResultsHandler] Error: {e}")
@@ -153,3 +156,4 @@ def start_results_handler():
                 mq.close()
             except:
                 pass
+        return None

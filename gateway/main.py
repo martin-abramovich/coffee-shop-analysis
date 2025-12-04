@@ -11,7 +11,7 @@ import json
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from common.logger import init_log
-from gateway.server import handle_client, active_sessions, sessions_lock
+from gateway.server import handle_client, active_sessions, sessions_lock, set_shutdown_event
 from middleware.middleware import MessageMiddlewareQueue, MessageMiddlewareExchange
 from gateway.results_handler import start_results_handler
 from common.healthcheck import start_healthcheck_server
@@ -80,6 +80,8 @@ def main():
     """
     logger.info("Iniciando Gateway...")
     
+    set_shutdown_event(shutdown_event)
+    
     # Iniciar servidor de healthcheck UDP
     healthcheck_port = int(os.environ.get('HEALTHCHECK_PORT', '8888'))
     healthcheck_thread = start_healthcheck_server(port=healthcheck_port, node_name="gateway", shutdown_event=shutdown_event)
@@ -87,7 +89,7 @@ def main():
  
     # Iniciar handler de resultados en threads separados
     logger.info("Iniciando handler de resultados...")
-    start_results_handler()
+    results_mq_connections = start_results_handler(shutdown_event)
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -125,7 +127,7 @@ def main():
                                 args=(conn, addr),
                                 name=f"Client-{addr[0]}:{addr[1]}"
                             )
-                            client_thread.daemon = True
+                            client_thread.daemon = False  # Non-daemon para graceful shutdown
                             client_thread.start()
                             
                             with threads_lock:
@@ -163,6 +165,23 @@ def main():
                         thread.join(timeout=10)
             
             logger.info("Todos los clientes han terminado")
+            
+            # Cerrar ResultsHandler
+            if results_mq_connections:
+                logger.info("Cerrando ResultsHandler...")
+                for query_name, mq in results_mq_connections.items():
+                    try:
+                        mq.stop_consuming()
+                        logger.info(f"Deteniendo consumo de {query_name}")
+                    except Exception as e:
+                        logger.error(f"Error deteniendo {query_name}: {e}")
+                
+                for query_name, mq in results_mq_connections.items():
+                    try:
+                        mq.close()
+                        logger.info(f"Conexión {query_name} cerrada")
+                    except Exception as e:
+                        logger.error(f"Error cerrando {query_name}: {e}")
                     
     except Exception as e:
         logger.error(f"Error en servidor: {e}")

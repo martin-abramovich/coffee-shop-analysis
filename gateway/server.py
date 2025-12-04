@@ -28,6 +28,14 @@ ENTITY_TYPES = {
     4: "menu_items"
 }
 
+# Control global de shutdown
+_shutdown_event = None
+
+def set_shutdown_event(event):
+    """Configura el evento de shutdown global para el servidor"""
+    global _shutdown_event
+    _shutdown_event = event
+
 def log_with_timestamp(message):
     """Función para logging con timestamp"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -370,12 +378,24 @@ def handle_client(conn, addr):
         conn.close()
         return
     
+    # Configurar timeout para poder verificar shutdown_event periódicamente
+    conn.settimeout(2.0)
+    
     try:
         while True:
-            data = conn.recv(65536)  # Buffer de 64KB (optimización de throughput)
-            if not data:
-                print("SALGO POR FALTA De DATA")
+            # Verificar si se solicitó shutdown
+            if _shutdown_event and _shutdown_event.is_set():
+                print(f"[GATEWAY] Sesión {session_id}: Shutdown solicitado, terminando recepción de datos")
                 break
+            
+            try:
+                data = conn.recv(65536)  # Buffer de 64KB (optimización de throughput)
+                if not data:
+                    print(f"[GATEWAY] Sesión {session_id}: Cliente terminó de enviar datos")
+                    break
+            except socket.timeout:
+                # Timeout esperado, continuar loop para verificar shutdown
+                continue
 
             buffer += data
 
