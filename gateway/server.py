@@ -334,13 +334,7 @@ def handle_client(conn, addr):
         "stores": time.time(),
         "menu_items": time.time()
     }
-    # Aumentado a 50 para reducir significativamente la presión en RabbitMQ
-    # Con batches de 100 registros, esto acumula ~5000 registros antes de enviar
     
-    
-    # Extraer configuración de escalado
-    
-    # Crear conexiones exclusivas para este thread
     thread_mq_map = {}
     try:
         thread_mq_map["transactions"] = MessageMiddlewareQueue(

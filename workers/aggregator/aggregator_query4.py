@@ -78,6 +78,7 @@ class AggregatorQuery4:
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(["transactions", "stores", "users"])
         self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER)
+        self.finish_sessions = set()
         
         #in 
         self.transactions_queue = None
@@ -307,7 +308,8 @@ class AggregatorQuery4:
             is_eos = header.get("is_eos")
             new_transactions = {}
             
-            if self.session_tracker.previus_update(session_id, "transactions", batch_id):
+            if session_id in self.finish_sessions or \
+                self.session_tracker.previus_update(session_id, "transactions", batch_id):
                 return
         
             if is_eos:
@@ -335,7 +337,8 @@ class AggregatorQuery4:
         batch_id = int(header.get("batch_id"))
         is_eos = header.get("is_eos")
         
-        if self.session_tracker.previus_update(session_id, "stores", batch_id):
+        if session_id in self.finish_sessions or \
+        self.session_tracker.previus_update(session_id, "stores", batch_id):
             return
             
         if is_eos:
@@ -361,7 +364,8 @@ class AggregatorQuery4:
             is_eos = header.get("is_eos")
             new_users = {}
             
-            if self.session_tracker.previus_update(session_id, "users", batch_id):
+            if session_id in self.finish_sessions or \
+                self.session_tracker.previus_update(session_id, "users", batch_id):
                 return
         
             if is_eos: logger.info(f"Se recibió EOS en users para sesión {session_id}, batch_id: {batch_id}. Marcando como listo...")
@@ -450,7 +454,7 @@ class AggregatorQuery4:
      
     def __load_sessions(self):
         logger.info("[*] Intentando recuperar estado previo...")
-        saved_data, saved_tracker = self.state_manager.load_all_sessions()
+        saved_data, saved_tracker, finish_sessions = self.state_manager.load_all_sessions()
 
         if saved_data and saved_tracker:
             self.__load_sessions_data(saved_data)
@@ -459,7 +463,8 @@ class AggregatorQuery4:
             logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
         else:
             logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
-    
+
+        self.finish_sessions = finish_sessions
     
     def start(self):
     

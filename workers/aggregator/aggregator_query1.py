@@ -7,6 +7,7 @@ from datetime import datetime
 import traceback
 
 from common.logger import init_log
+from workers.aggregator.delete_thread import delete_sessions_thread
 from workers.session_tracker import SessionTracker
 from workers.aggregator.sesion_state_manager import SessionStateManager, merge_list
 # Añadir paths al PYTHONPATH
@@ -38,8 +39,10 @@ class AggregatorQuery1:
         self.total_received = 0
         self.session_tracker = SessionTracker(["transactions"])
         self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER)
+        self.finish_sessions = set()
         
         self.shutdown_event = threading.Event()
+        self.delete_thread = None
         self.amount_trans_queue = None
         self.results_queue = None
      
@@ -158,19 +161,21 @@ class AggregatorQuery1:
         start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query1", shutdown_event=self.shutdown_event)
         logger.info(f"[AggregatorQuery1] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
-    def __del_session(self, session_id):
+    def __finish_session(self, session_id):
+        """Marca una sesión como finalizada"""
+        self.state_manager.finish_session(session_id)
+        
+        self.finish_sessions.add(session_id)
+        
         #data en memoria
         if session_id in self.session_data:
             del self.session_data[session_id]
         
-        #data en disco
-        self.state_manager.delete_session(session_id)
     
     def __save_session_add(self, session_id, new_transactions):
         tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, "transactions")
         
         self.state_manager.save_type_state_add(session_id, "transactions", new_transactions, tracker_snap)
-        
         
         
     def __on_message(self, body):
@@ -182,7 +187,8 @@ class AggregatorQuery1:
             is_eos = header.get("is_eos", "")
             new_transactions = []
             
-            if self.session_tracker.previus_update(session_id, "transactions", batch_id):
+            if session_id in self.finish_sessions or \
+            self.session_tracker.previus_update(session_id, "transactions", batch_id):
                 return
 
             if rows:
@@ -191,7 +197,7 @@ class AggregatorQuery1:
             if self.session_tracker.update(session_id, "transactions",batch_id, is_eos): 
                     self.__send_results(session_id)
                     
-                    self.__del_session(session_id)
+                    self.__finish_session(session_id)
                 
             else: 
                 self.__save_session_add(session_id, new_transactions)
@@ -209,7 +215,7 @@ class AggregatorQuery1:
     
     def __load_sessions(self):
         logger.info("[*] Intentando recuperar estado previo...")
-        saved_data, saved_tracker = self.state_manager.load_all_sessions()
+        saved_data, saved_tracker, finish_sessions = self.state_manager.load_all_sessions()
         
         if saved_data and saved_tracker:
             self.session_tracker.load_state_snapshot(saved_tracker)
@@ -217,12 +223,31 @@ class AggregatorQuery1:
             logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
         else:
             logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
+        
+        self.finish_sessions = finish_sessions
     
+    
+    
+    def __init_delete_sessions(self):
+        """
+        Inicializa y comienza el hilo de fondo para la limpieza periódica 
+        de sesiones expiradas.
+        """
+        logger.info(f"[*] Inicializando limpieza periódica de sesiones...")
+        
+        self.delete_thread = threading.Thread(
+            target=delete_sessions_thread,
+            args=(self.state_manager, self.shutdown_event, logger),
+            name="SessionCleanupThread"
+        )
+        
+        self.delete_thread.start()
         
     def start(self): 
         self.__init_healthcheck()
         self.__init_signal_handler()
         self.__init_middleware()
+        self.__init_delete_sessions()
         
         self.__load_sessions()
             
@@ -243,6 +268,11 @@ class AggregatorQuery1:
 
     def __close_middleware(self):
         "Cerrar conexiones"
+        
+        if self.delete_thread and self.delete_thread.is_alive():
+            self.delete_thread.join()
+        
+        self.state_manager.finish_all_active_sessions()
         
         for mq in [self.amount_trans_queue, self.results_queue]:
             try:

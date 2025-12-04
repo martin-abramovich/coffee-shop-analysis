@@ -36,12 +36,11 @@ class AggregatorQuery3:
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(tracked_types=["tpv", "stores"])
         self.state_manager = SessionStateManager()
+        self.finish_sessions = set()
         
         #in
         self.tpv_queue = None
         self.stores_exchange = None 
-        #out       
-        self.results_exchange = None
         
     def __initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
@@ -210,7 +209,8 @@ class AggregatorQuery3:
         batch_id = int(header.get("batch_id"))
         is_eos = header.get("is_eos")
 
-        if self.session_tracker.previus_update(session_id, "tpv", batch_id):
+        if session_id in self.finish_sessions or \
+            self.session_tracker.previus_update(session_id, "tpv", batch_id):
             return
         
         if is_eos:
@@ -238,7 +238,8 @@ class AggregatorQuery3:
         is_eos = header.get("is_eos")
         batch_id = int(header.get("batch_id", -1))
 
-        if self.session_tracker.previus_update(session_id, "stores", batch_id):
+        if session_id in self.finish_sessions or \
+            self.session_tracker.previus_update(session_id, "stores", batch_id):
             return
         
         if is_eos:
@@ -316,7 +317,7 @@ class AggregatorQuery3:
                     
     def __load_sessions(self):
         logger.info("[*] Intentando recuperar estado previo...")
-        saved_data, saved_tracker = self.state_manager.load_all_sessions()
+        saved_data, saved_tracker, finish_sessions = self.state_manager.load_all_sessions()
 
         if saved_data and saved_tracker:
             self.__load_sessions_data(saved_data)
@@ -325,6 +326,8 @@ class AggregatorQuery3:
             logger.info(f"[*] Estado recuperado. Sesiones activas: {len(self.session_data)}")
         else:
             logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
+        
+        self.finish_sessions = finish_sessions
             
     def start(self):
         self.__init_healthcheck()
