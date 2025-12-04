@@ -19,6 +19,10 @@ RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
 HOST = "0.0.0.0"
 PORT = 9000
 
+FLUSH_THRESHOLD = 50  
+MAX_BUFFER_SIZE = 100  # Si algún buffer llega a este tamaño, hacer flush inmediato
+FLUSH_INTERVAL = 5.0  # Hacer flush cada 5 segundos incluso si no se alcanza el threshold
+
 # Tipos de entidades según el protocolo
 ENTITY_TYPES = {
     0: "transactions",
@@ -312,7 +316,7 @@ def handle_client(conn, addr):
     
     # Control para saber qué tipos de entidad hemos visto y cuáles han terminado
     entity_types_seen = set()
-    entity_types_eos_sent = set()
+    eos_count = 0
     
     # Buffers para acumular mensajes antes de enviar (optimización de throughput)
     message_buffers = {
@@ -332,9 +336,7 @@ def handle_client(conn, addr):
     }
     # Aumentado a 50 para reducir significativamente la presión en RabbitMQ
     # Con batches de 100 registros, esto acumula ~5000 registros antes de enviar
-    FLUSH_THRESHOLD = 50  
-    MAX_BUFFER_SIZE = 100  # Si algún buffer llega a este tamaño, hacer flush inmediato
-    FLUSH_INTERVAL = 5.0  # Hacer flush cada 5 segundos incluso si no se alcanza el threshold
+    
     
     # Extraer configuración de escalado
     
@@ -416,7 +418,6 @@ def handle_client(conn, addr):
                     entity_types_seen.add(entity_type)
                     
                     
-                    
                     if batch_count < 3 or batch_count % 10000 == 0:
                         print(f"[GATEWAY] Sesión {session_id}: Procesados {batch_count} batches, total registros: {session.total_processed}")
                         print(f"Batch id: {batch_id}")
@@ -429,8 +430,9 @@ def handle_client(conn, addr):
                         session_id=session_id
                     )
                     
-                    #send_message(session_id, entity_type, msg, thread_mq_map, scalable_exchanges)
-                    
+                    if len(items) == 0:
+                        eos_count += 1
+                        
                     # OPTIMIZACIÓN: Acumular en buffer en lugar de enviar inmediatamente
                     message_buffers[entity_type].append(msg)
                     
@@ -462,54 +464,58 @@ def handle_client(conn, addr):
         print(f"[GATEWAY] Sesión {session_id}: Error en conexión con {addr}: {e}")
     finally:
         # Marcar sesión como inactiva
-        session.is_active = False
-        
-        print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes ...")
-        
-        # Para cada tipo que vimos, hacer flush final y enviar EOS inmediatamente
-        for entity_type in entity_types_seen:
-            if entity_type not in entity_types_eos_sent:  # Solo si no enviamos EOS ya
+        if eos_count == len(entity_types_seen):
+            session.is_active = False
+            
+            print(f"[GATEWAY] Sesión {session_id}: Enviando mensajes pendientes ...")
+            
+            # Para cada tipo que vimos, hacer flush final y enviar EOS inmediatamente
+            for entity_type in entity_types_seen:
                 # Flush final
                 if message_buffers[entity_type]:
                     buffer_size = len(message_buffers[entity_type])
                     try:
                         flush_message_buffer(session_id, entity_type, message_buffers[entity_type], 
-                                           thread_mq_map)
+                                        thread_mq_map)
                         print(f"[GATEWAY] Sesión {session_id}: Flush final de {entity_type} ({buffer_size} mensajes)")
                     except Exception as e:
                         print(f"[GATEWAY] Sesión {session_id}: Error en flush de {entity_type}: {e}")
-                
-        results_payload = {}
-        missing_queries = []
-        try:
-            expected = EXPECTED_RESULT_QUERIES if EXPECTED_RESULT_QUERIES else None
-            results_payload, missing_queries = result_dispatcher.wait_for_results(
-                session_id,
-                expected_queries=expected,
-                timeout=None,
-            )
-        except Exception as wait_error:
-            print(f"[GATEWAY] Sesión {session_id}: Error esperando resultados: {wait_error}")
-        finally:
+                    
+            results_payload = {}
+            missing_queries = []
+            try:
+                expected = EXPECTED_RESULT_QUERIES if EXPECTED_RESULT_QUERIES else None
+                results_payload, missing_queries = result_dispatcher.wait_for_results(
+                    session_id,
+                    expected_queries=expected,
+                    timeout=None,
+                )
+            except Exception as wait_error:
+                print(f"[GATEWAY] Sesión {session_id}: Error esperando resultados: {wait_error}")
+            finally:
+                result_dispatcher.cleanup_session(session_id)
+            
+            # Enviar ACK final al cliente (4 bytes longitud + JSON UTF-8)
+            try:
+                summary_text = f"OK session={session_id} batches={session.batch_count} total_records={session.total_processed}"
+                response_body = {
+                    "status": "OK",
+                    "session_id": session_id,
+                    "batch_count": session.batch_count,
+                    "total_processed": session.total_processed,
+                    "summary": summary_text,
+                    "results": results_payload,
+                    "missing_results": missing_queries,
+                }
+                payload = json.dumps(response_body).encode('utf-8')
+                header = len(payload).to_bytes(4, byteorder='big')
+                conn.sendall(header + payload)
+            except Exception as send_error:
+                print(f"[GATEWAY] Sesión {session_id}: Error enviando respuesta final: {send_error}")
+        else: 
+            print(f"[GATEWAY] Sesión {session_id}: No se recibieron todos los EOS. Sesión incompleta.")
             result_dispatcher.cleanup_session(session_id)
-        
-        # Enviar ACK final al cliente (4 bytes longitud + JSON UTF-8)
-        try:
-            summary_text = f"OK session={session_id} batches={session.batch_count} total_records={session.total_processed}"
-            response_body = {
-                "status": "OK",
-                "session_id": session_id,
-                "batch_count": session.batch_count,
-                "total_processed": session.total_processed,
-                "summary": summary_text,
-                "results": results_payload,
-                "missing_results": missing_queries,
-            }
-            payload = json.dumps(response_body).encode('utf-8')
-            header = len(payload).to_bytes(4, byteorder='big')
-            conn.sendall(header + payload)
-        except Exception as send_error:
-            print(f"[GATEWAY] Sesión {session_id}: Error enviando respuesta final: {send_error}")
+            
         # Cerrar conexiones del thread
         print(f"[GATEWAY] Sesión {session_id}: Cerrando conexiones RabbitMQ...")
         for entity_type, mq in thread_mq_map.items():
