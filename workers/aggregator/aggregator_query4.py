@@ -197,6 +197,9 @@ class AggregatorQuery4:
                 missing_users.add(user_id)
                 continue
             
+            if birthdate == "1970-01-01":
+                continue
+            
             transactions_by_store[store_id].append({
                 'store_name': store_name,
                 'user_id': user_id,
