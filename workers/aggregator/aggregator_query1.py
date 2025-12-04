@@ -218,6 +218,7 @@ class AggregatorQuery1:
         else:
             logger.info("[*] No se encontró estado previo o estaba corrupto. Iniciando desde cero.")
     
+        
     def start(self): 
         self.__init_healthcheck()
         self.__init_signal_handler()

@@ -308,9 +308,7 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                         if total_batches_sent <=  3 or total_batches_sent % 10000 == 0:
                             logging.debug(f"Enviados {total_batches_sent} batches, entidades en último: {len(batch)}")
                     else:
-                        # send_batch retornó False: cancelado por stop_event
                         logging.debug("Envío cancelado por stop_event, finalizando...")
-                        break
                     
                     data_queue.task_done()
                 
