@@ -173,7 +173,8 @@ def discover_query_files(
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Valida que cada fila de results/queryX.csv esté incluida en results_expected/queryX.csv.\n"
+            "Valida que cada fila de results/queryX.csv (o results/session_{id}/queryX.csv) "
+            "esté incluida en results_expected/queryX.csv.\n"
             "Comparación multiset (considera duplicados) mediante índice SQLite temporal de hashes estables."
         )
     )
@@ -188,6 +189,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=Path,
         default=Path("results_expected"),
         help="Directorio con CSVs esperados (default: results_expected)",
+    )
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        help="ID de sesión para validar archivos dentro de results/session_{session_id}/. Si se omite, busca directamente en results/.",
     )
     parser.add_argument(
         "--queries",
@@ -233,6 +239,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     results_dir: Path = args.results_dir
     expected_dir: Path = args.expected_dir
     selected: Optional[List[int]] = args.queries
+    session_id: Optional[str] = args.session_id
+
+    # Si se especifica session-id, buscar dentro de la carpeta de sesión
+    if session_id:
+        results_dir = results_dir / f"session_{session_id}"
+        print(f"[INFO] Validando sesión: {session_id}")
+        print(f"[INFO] Buscando archivos en: {results_dir}")
 
     if not results_dir.exists():
         print(f"[ERROR] No existe el directorio de resultados: {results_dir}", file=sys.stderr)
