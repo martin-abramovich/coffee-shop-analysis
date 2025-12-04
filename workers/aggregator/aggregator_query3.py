@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 
 from common.utils import yyyys_int_to_string
+from workers.aggregator.delete_thread import delete_sessions_thread
 from workers.aggregator.sesion_state_manager import SessionStateManager
 from common.logger import init_log
 from workers.session_tracker import SessionTracker
@@ -32,7 +33,8 @@ class AggregatorQuery3:
     def __init__(self):
         # Datos por sesión: {session_id: session_data}
         self.session_data = {}
-
+        self.session_data_lock = threading.Lock()
+        
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(tracked_types=["tpv", "stores"])
         self.state_manager = SessionStateManager()
@@ -44,14 +46,15 @@ class AggregatorQuery3:
         
     def __initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
-        if session_id not in self.session_data:
-            self.session_data[session_id] = {
-                'tpv':{
-                    'semester_store_tpv': defaultdict(float),
-                    'batches_received': 0,
-                    },
-                'stores': {},
-            }
+        with self.session_data_lock:
+            if session_id not in self.session_data:
+                self.session_data[session_id] = {
+                    'tpv':{
+                        'semester_store_tpv': defaultdict(float),
+                        'batches_received': 0,
+                        },
+                    'stores': {},
+                }
     
     def __get_session_data(self, session_id):
         """Obtiene los datos de una sesión específica"""
@@ -186,13 +189,17 @@ class AggregatorQuery3:
             
         logger.info(f"[AggregatorQuery3] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
     
-    def __del_session(self, session_id):
-        #data en memoria
-        if session_id in self.session_data:
-            del self.session_data[session_id]
+    
+    def __finish_session(self, session_id):
+        """Marca una sesión como finalizada"""
+        self.state_manager.finish_session(session_id)
         
-        #data en disco
-        self.state_manager.delete_session(session_id)
+        self.finish_sessions.add(session_id)
+        
+        #data en memoria
+        with self.session_data_lock:
+            if session_id in self.session_data:
+                del self.session_data[session_id]
         
     def __save_session_type(self, session_id, type: str):
         tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
@@ -221,7 +228,7 @@ class AggregatorQuery3:
             
         if self.session_tracker.update(session_id, "tpv", batch_id, is_eos):
             self.__generate_and_send_results(session_id)
-            self.__del_session(session_id)
+            self.__finish_session(session_id)
             
         else: 
             self.__save_session_type(session_id, "tpv")
@@ -250,7 +257,7 @@ class AggregatorQuery3:
             
         if self.session_tracker.update(session_id, "stores", batch_id, is_eos):
             self.__generate_and_send_results(session_id)
-            self.__del_session(session_id)
+            self.__finish_session(session_id)
         else: 
             self.__save_session_type(session_id, "stores")
         
@@ -299,6 +306,21 @@ class AggregatorQuery3:
         start_healthcheck_server(port=healthcheck_port, node_name="aggregator_query3", shutdown_event=self.shutdown_event)
         logger.info(f"[AggregatorQuery3] Healthcheck server iniciado en puerto UDP {healthcheck_port}")
     
+    def __init_delete_sessions(self):
+        """
+        Inicializa y comienza el hilo de fondo para la limpieza periódica 
+        de sesiones expiradas.
+        """
+        logger.info(f"[*] Inicializando limpieza periódica de sesiones...")
+        
+        self.delete_thread = threading.Thread(
+            target=delete_sessions_thread,
+            args=(self.state_manager, self.shutdown_event, logger, self.session_data, self.session_data_lock),
+            name="SessionCleanupThread"
+        )
+        
+        self.delete_thread.start()
+        
     def __load_sessions_data(self, data: dict): 
         for session_id, types_data in data.items():
             self.__initialize_session(session_id)
@@ -332,6 +354,7 @@ class AggregatorQuery3:
     def start(self):
         self.__init_healthcheck()
         self.__init_signal_handler()
+        self.__init_delete_sessions()
         
         self.__load_sessions()
         
@@ -339,25 +362,29 @@ class AggregatorQuery3:
         logger.info("[*] Query 3: TPV por semestre y sucursal 2024-2025 (06:00-23:00)")
         logger.info("[*] Consumiendo de 2 fuentes: TPV + stores para JOIN")
         
-        try:
-            tpv_thread = threading.Thread(target=self.__consume_tpv)
-            stores_thread = threading.Thread(target=self.__consume_stores)
-            
-            tpv_thread.start()
-            stores_thread.start()
-            
-            logger.info("[AggregatorQuery3] Worker iniciado, esperando mensajes de múltiples sesiones...")
-            
-            tpv_thread.join()
-            stores_thread.join()
+        self.__run()
                 
-            logger.info("[AggregatorQuery3] Terminando por señal externa")
-            
-        except KeyboardInterrupt:
-            logger.warning("\n[AggregatorQuery3] Interrupción recibida")
-        finally:   
-            logger.info("[x] AggregatorQuery3 detenido")
+        self.__close_delete_session()    
+        
+        logger.info("[x] AggregatorQuery3 detenido")
 
+    def __run(self):
+        tpv_thread = threading.Thread(target=self.__consume_tpv)
+        stores_thread = threading.Thread(target=self.__consume_stores)
+            
+        tpv_thread.start()
+        stores_thread.start()
+            
+        logger.info("[AggregatorQuery3] Worker iniciado, esperando mensajes de múltiples sesiones...")
+            
+        tpv_thread.join()
+        stores_thread.join()
+
+    def __close_delete_session(self):
+        if self.delete_thread and self.delete_thread.is_alive():
+            self.delete_thread.join()
+        
+        self.state_manager.finish_all_active_sessions()
 
 
                 

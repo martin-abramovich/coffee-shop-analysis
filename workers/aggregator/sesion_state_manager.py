@@ -162,50 +162,63 @@ class SessionStateManager:
     
     def delete_finish_session(self, expiration_seconds):
         """
-        Elimina las carpetas de sesión que tienen un FINISH_TIMESTAMP 
-        más antiguo que el tiempo de expiración dado.
+        Elimina carpetas de sesión que:
+        1. Tienen un FINISH_TIMESTAMP expirado.
+        2. No tienen FINISH_TIMESTAMP, pero cuya última modificación
+           en cualquier archivo es más antigua que la expiración (sesiones inactivas).
         
-        :param expiration_seconds: Tiempo en segundos que debe haber pasado 
-                                   desde que la sesión fue marcada como finalizada.
+        Retorna:
+            list: Lista de IDs de sesión eliminadas por la Lógica 2 (Inactividad).
         """
         current_time = time.time()
         
         # Tiempo límite de expiración
         expire_before = current_time - expiration_seconds
         
-        logger.info(f"Buscando sesiones finalizadas para borrar (expiración: {expiration_seconds}s).")
+        logger.info(f"Buscando sesiones para borrar (Inactivas o Finalizadas expiradas: {expiration_seconds}s).")
+        
+        # Nueva lista para almacenar los IDs eliminados por inactividad
+        inactive_deleted_ids = []
 
         # Recorrer todas las subcarpetas en el base_dir
         for session_id in os.listdir(self.base_dir):
             session_dir = os.path.join(self.base_dir, session_id)
             
-            # Solo procesar directorios
             if not os.path.isdir(session_dir):
                 continue
             
             finish_file_path = os.path.join(session_dir, FINISH_FILE_NAME)
             
-            # 1. Verificar si existe el archivo de finalización
+            # --- LÓGICA 1: SESIÓN FINALIZADA EXPIRADA ---
             if os.path.exists(finish_file_path):
                 try:
                     with open(finish_file_path, 'r') as f:
-                        timestamp_str = f.read().strip()
-                        finish_timestamp = float(timestamp_str)
+                        finish_timestamp = float(f.read().strip())
                     
-                    # 2. Comprobar la expiración
                     if finish_timestamp < expire_before:
-                        logger.info(f"Sesión {session_id} expirada (Finalizó en {finish_timestamp:.2f}). Eliminando...")
-                        
-                        # Reutilizar el método de borrado completo
+                        logger.info(f"Sesión {session_id} [FINALIZADA] expirada ({finish_timestamp:.2f}). Eliminando...")
                         self.delete_session(session_id)
                     
                 except (IOError, ValueError, Exception) as e:
-                    # Capturar errores de lectura o conversión (archivo corrupto)
                     logger.warning(f"Error procesando FINISH_TIMESTAMP para sesión {session_id}. Podría estar corrupto: {e}")
             
+            # --- LÓGICA 2: SESIÓN ACTIVA ABANDONADA (Inactividad) ---
             else:
-                # Si la carpeta existe pero no tiene el FINISH_TIMESTAMP, se considera activa/no finalizada
-                pass
+                try:
+                    latest_mtime = self._get_latest_mtime(session_dir)
+                    
+                    if latest_mtime < expire_before:
+                        logger.warning(f"Sesión {session_id} [INACTIVA] detectada. Última modif.: {latest_mtime:.2f}. Eliminando...")
+                        
+                        self.delete_session(session_id) 
+                        
+                        # AÑADIDO: Guardar el ID de la sesión eliminada por inactividad
+                        inactive_deleted_ids.append(session_id)
+                        
+                except Exception as e:
+                    logger.error(f"Error verificando mtime para sesión inactiva {session_id}: {e}")
+        
+        return inactive_deleted_ids
     
     def finish_all_active_sessions(self):
         """
@@ -253,7 +266,38 @@ class SessionStateManager:
         except OSError as e:
             logger.warning(f"No se pudo borrar directorio de sesión {session_id}: {e}")
     
-  
+    def _get_latest_mtime(self, session_dir):
+        """
+        Encuentra el tiempo de última modificación (mtime) más reciente 
+        dentro de un directorio de sesión, incluyendo subdirectorios.
+        
+        Retorna:
+            float: El timestamp de la última modificación encontrada, 
+                   o el mtime del propio directorio si no hay archivos.
+        """
+        # Inicializamos con el tiempo de modificación del propio directorio
+        latest_time = os.path.getmtime(session_dir)
+        
+        # Recorrido recursivo (os.walk)
+        for dirpath, dirnames, filenames in os.walk(session_dir):
+            for name in filenames:
+                file_path = os.path.join(dirpath, name)
+                # Omitimos el archivo de finalización, ya que es la marca de estado
+                if name == FINISH_FILE_NAME:
+                    continue
+                
+                try:
+                    # Obtenemos el tiempo de última modificación del archivo
+                    mtime = os.path.getmtime(file_path)
+                    # Actualizamos el tiempo más reciente
+                    if mtime > latest_time:
+                        latest_time = mtime
+                except OSError:
+                    # Ignoramos si el archivo fue borrado entre el listado y la comprobación
+                    continue
+        
+        return latest_time
+    
     def load_all_sessions(self):
         """
         Recorre carpetas y archivos para reconstruir el estado global.

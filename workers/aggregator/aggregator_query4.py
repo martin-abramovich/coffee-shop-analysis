@@ -10,6 +10,7 @@ from datetime import datetime
 import traceback
 
 from common.logger import init_log
+from workers.aggregator.delete_thread import delete_sessions_thread
 from workers.aggregator.sesion_state_manager import SessionStateManager, merge_replace_dicts, merge_sum_dicts
 from workers.session_tracker import SessionTracker
 
@@ -74,6 +75,7 @@ class AggregatorQuery4:
     def __init__(self):
         # Datos por sesión: {session_id: session_data}
         self.session_data = {}
+        self.session_data_lock = threading.Lock()
         
         self.shutdown_event = threading.Event()
         self.session_tracker = SessionTracker(["transactions", "stores", "users"])
@@ -88,13 +90,14 @@ class AggregatorQuery4:
     
     def __initialize_session(self, session_id):
         """Inicializa datos para una nueva sesión"""
-        if session_id not in self.session_data:
-            self.session_data[session_id] = {
-                "transactions":defaultdict(int),
-                # Diccionarios de JOIN
-                'stores': {},  # store_id -> store_name
-                'users': {},  # user_id -> birthdate
-            }
+        with self.session_data_lock:
+            if session_id not in self.session_data:
+                self.session_data[session_id] = {
+                    "transactions":defaultdict(int),
+                    # Diccionarios de JOIN
+                    'stores': {},  # store_id -> store_name
+                    'users': {},  # user_id -> birthdate
+                }
     
     def __get_session_data(self, session_id):
         """Obtiene los datos de una sesión específica"""
@@ -279,14 +282,17 @@ class AggregatorQuery4:
              
         logger.info(f"[AggregatorQuery4] Resultados finales enviados para sesión {session_id}. Worker continúa activo esperando nuevos clientes...")
         
+    
+    def __finish_session(self, session_id):
+        """Marca una sesión como finalizada"""
+        self.state_manager.finish_session(session_id)
         
-    def __del_session(self, session_id):
+        self.finish_sessions.add(session_id)
+        
         #data en memoria
-        if session_id in self.session_data:
-            del self.session_data[session_id]
-        
-        #data en disco
-        self.state_manager.delete_session(session_id)
+        with self.session_data_lock:
+            if session_id in self.session_data:
+                del self.session_data[session_id]
           
     def __save_session_type(self, session_id, type: str):
         tracker_snap = self.session_tracker.get_single_session_type_snapshot(session_id, type)
@@ -321,7 +327,7 @@ class AggregatorQuery4:
             if self.session_tracker.update(session_id, "transactions", batch_id, is_eos):
                 self.__generate_and_send_results(session_id)
                 
-                self.__del_session(session_id)
+                self.__finish_session(session_id)
             else: 
                 self.__save_session_type_add(session_id, "transactions", new_transactions)
             
@@ -350,7 +356,7 @@ class AggregatorQuery4:
         if self.session_tracker.update(session_id, "stores", batch_id, is_eos):
             self.__generate_and_send_results(session_id)
             
-            self.__del_session(session_id)
+            self.__finish_session(session_id)
         else:
             self.__save_session_type(session_id, "stores")
     
@@ -376,7 +382,7 @@ class AggregatorQuery4:
             if self.session_tracker.update(session_id, "users", batch_id, is_eos):
                 self.__generate_and_send_results(session_id)
                 
-                self.__del_session(session_id)
+                self.__finish_session(session_id)
                 
             else:
                 self.__save_session_type_add(session_id, "users", new_users)
@@ -437,6 +443,21 @@ class AggregatorQuery4:
         signal.signal(signal.SIGTERM, self.__signal_handler)
         signal.signal(signal.SIGINT, self.__signal_handler)
     
+    def __init_delete_sessions(self):
+        """
+        Inicializa y comienza el hilo de fondo para la limpieza periódica 
+        de sesiones expiradas.
+        """
+        logger.info(f"[*] Inicializando limpieza periódica de sesiones...")
+        
+        self.delete_thread = threading.Thread(
+            target=delete_sessions_thread,
+            args=(self.state_manager, self.shutdown_event, logger, self.session_data, self.session_data_lock),
+            name="SessionCleanupThread"
+        )
+        
+        self.delete_thread.start()
+        
     def __load_sessions_data(self, data: dict): 
         for session_id, types_data in data.items():
             self.__initialize_session(session_id)
@@ -469,7 +490,8 @@ class AggregatorQuery4:
     def start(self):
     
         self.__init_healthcheck()
-        self.__init_signal_handler()        
+        self.__init_signal_handler()  
+        self.__init_delete_sessions()      
         
         self.__load_sessions()
         
@@ -478,6 +500,8 @@ class AggregatorQuery4:
         logger.info("[*] Consumiendo de 3 fuentes: transacciones + stores + users para doble JOIN")
          
         self.__run()
+        
+        self.__close_delete_session()
         
         logger.info("[x] AggregatorQuery4 detenido")
 
@@ -496,6 +520,12 @@ class AggregatorQuery4:
         transactions_thread.join()
         stores_thread.join()
         users_thread.join()
+    
+    def __close_delete_session(self):
+        if self.delete_thread and self.delete_thread.is_alive():
+            self.delete_thread.join()
+        
+        self.state_manager.finish_all_active_sessions()
         
 if __name__ == "__main__":    
     logger = init_log("AggregatorQuery4")

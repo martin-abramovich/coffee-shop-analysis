@@ -36,6 +36,7 @@ class AggregatorQuery1:
     def __init__(self):
         # Acumulador de transacciones válidas por sesión
         self.session_data = {}  # {session_id: {'transactions': [], 'total_received': 0}}
+        self.session_data_lock = threading.Lock()
         self.total_received = 0
         self.session_tracker = SessionTracker(["transactions"])
         self.state_manager = SessionStateManager(DEFAULT_DATA_CONFIGS_STATE_MANAGER)
@@ -50,8 +51,9 @@ class AggregatorQuery1:
     def __accumulate_transactions(self, rows, session_id):
         """Acumula transacciones que pasaron todos los filtros para una sesión específica."""
         
-        if session_id not in self.session_data:
-            self.session_data[session_id] = {'transactions': [], 'total_received': 0}
+        with self.session_data_lock:
+            if session_id not in self.session_data:
+                self.session_data[session_id] = {'transactions': [], 'total_received': 0}
         
         session_info = self.session_data[session_id]
         new_transactions = []
@@ -168,8 +170,9 @@ class AggregatorQuery1:
         self.finish_sessions.add(session_id)
         
         #data en memoria
-        if session_id in self.session_data:
-            del self.session_data[session_id]
+        with self.session_data_lock:
+            if session_id in self.session_data:
+                del self.session_data[session_id]
         
     
     def __save_session_add(self, session_id, new_transactions):
@@ -237,7 +240,7 @@ class AggregatorQuery1:
         
         self.delete_thread = threading.Thread(
             target=delete_sessions_thread,
-            args=(self.state_manager, self.shutdown_event, logger),
+            args=(self.state_manager, self.shutdown_event, logger, self.session_data, self.session_data_lock),
             name="SessionCleanupThread"
         )
         
@@ -261,7 +264,8 @@ class AggregatorQuery1:
             logger.info("\n[AggregatorQuery1] Interrupción recibida")
             self.shutdown_event.set()
         finally: 
-            self.__close_middleware()        
+            self.__close_middleware() 
+            self.__close_delete_session()
             logger.info("[x] AggregatorQuery1 detenido")
 
 
@@ -269,16 +273,17 @@ class AggregatorQuery1:
     def __close_middleware(self):
         "Cerrar conexiones"
         
-        if self.delete_thread and self.delete_thread.is_alive():
-            self.delete_thread.join()
-        
-        self.state_manager.finish_all_active_sessions()
-        
         for mq in [self.amount_trans_queue, self.results_queue]:
             try:
                 mq.close()
             except Exception as e:
                 logger.error(f"Error al cerrar conexión: {e}")
+
+    def __close_delete_session(self):
+        if self.delete_thread and self.delete_thread.is_alive():
+            self.delete_thread.join()
+        
+        self.state_manager.finish_all_active_sessions()
 
 
 if __name__ == "__main__":
