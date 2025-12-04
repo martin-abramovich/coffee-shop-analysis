@@ -187,8 +187,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--expected-dir",
         type=Path,
-        default=Path("results_expected"),
-        help="Directorio con CSVs esperados (default: results_expected)",
+        default=None,
+        help="Directorio con CSVs esperados. Si se usa --session-id, default es results/results_expected. Si no, default es results_expected.",
     )
     parser.add_argument(
         "--session-id",
@@ -237,15 +237,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     results_dir: Path = args.results_dir
-    expected_dir: Path = args.expected_dir
     selected: Optional[List[int]] = args.queries
     session_id: Optional[str] = args.session_id
+
+    # Determinar el directorio esperado según si hay session-id o no
+    if args.expected_dir is not None:
+        expected_dir: Path = args.expected_dir
+    elif session_id:
+        # Si hay session-id, results_expected está en results/results_expected
+        expected_dir = results_dir / "results_expected"
+    else:
+        # Si no hay session-id, usar el default original
+        expected_dir = Path("results_expected")
 
     # Si se especifica session-id, buscar dentro de la carpeta de sesión
     if session_id:
         results_dir = results_dir / f"session_{session_id}"
         print(f"[INFO] Validando sesión: {session_id}")
         print(f"[INFO] Buscando archivos en: {results_dir}")
+        print(f"[INFO] Comparando con esperados en: {expected_dir}")
 
     if not results_dir.exists():
         print(f"[ERROR] No existe el directorio de resultados: {results_dir}", file=sys.stderr)
