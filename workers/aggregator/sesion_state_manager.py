@@ -269,34 +269,44 @@ class SessionStateManager:
     
     def _get_latest_mtime(self, session_dir):
         """
-        Encuentra el tiempo de última modificación (mtime) más reciente 
-        dentro de un directorio de sesión, incluyendo subdirectorios.
-        
-        Retorna:
-            float: El timestamp de la última modificación encontrada, 
-                   o el mtime del propio directorio si no hay archivos.
+        Encuentra el mtime más reciente. 
+        CORRECCIÓN: Revisa subdirectorios y maneja bloqueos de archivo como actividad reciente.
         """
-        # Inicializamos con el tiempo de modificación del propio directorio
-        latest_time = os.path.getmtime(session_dir)
-        
-        # Recorrido recursivo (os.walk)
+        # 1. Inicializamos con el tiempo del directorio raíz
+        try:
+            latest_time = os.path.getmtime(session_dir)
+        except OSError:
+            # Si ni siquiera podemos leer la raíz, asumimos que es actual para no borrarla por error
+            return time.time()
+
         for dirpath, dirnames, filenames in os.walk(session_dir):
-            for name in filenames:
-                file_path = os.path.join(dirpath, name)
-                # Omitimos el archivo de finalización, ya que es la marca de estado
-                if name == FINISH_FILE_NAME:
-                    continue
-                
+            
+            # --- MEJORA 1: Revisar fecha de subdirectorios ---
+            # Las operaciones de os.replace actualizan el mtime del directorio contenedor
+            for dirname in dirnames:
                 try:
-                    # Obtenemos el tiempo de última modificación del archivo
-                    mtime = os.path.getmtime(file_path)
-                    # Actualizamos el tiempo más reciente
+                    dir_full_path = os.path.join(dirpath, dirname)
+                    mtime = os.path.getmtime(dir_full_path)
                     if mtime > latest_time:
                         latest_time = mtime
                 except OSError:
-                    # Ignoramos si el archivo fue borrado entre el listado y la comprobación
+                    pass # Si falla leer un dir, seguimos
+            
+            # --- MEJORA 2: Revisar archivos ---
+            for name in filenames:
+                if name == FINISH_FILE_NAME:
                     continue
-        
+                
+                file_path = os.path.join(dirpath, name)
+                
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    if mtime > latest_time:
+                        latest_time = mtime
+                except OSError:
+                    self.logger.debug(f"Archivo en uso/desaparecido detectado en {session_dir}, asumiendo activo.")
+                    latest_time = time.time() 
+
         return latest_time
     
     def load_all_sessions(self):

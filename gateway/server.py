@@ -102,23 +102,6 @@ def read_bool(data, offset):
     value = data[offset] != 0
     return value, offset + 1
 
-def read_datetime_as_iso(data, offset):
-    """Lee un timestamp uint64 y lo devuelve como ISO UTC string"""
-    ts, new_offset = read_uint64(data, offset)
-    if ts == 0:
-        # Tratar 0 como "sin fecha"
-        return "", new_offset
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    return dt.isoformat(), new_offset
-
-def read_date_as_iso(data, offset):
-    """Lee un date como timestamp (mismo formato) y devuelve YYYY-MM-DD"""
-    ts, new_offset = read_uint64(data, offset)
-    if ts == 0:
-        # Tratar 0 como "sin fecha"
-        return "", new_offset
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    return dt.date().isoformat(), new_offset
 
 
 def parse_batch(data):

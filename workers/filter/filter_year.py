@@ -39,19 +39,22 @@ WORKER_ID = int(os.environ.get('WORKER_ID'))
 def year_from_timestamp(ts: int) -> int:
     """
     Devuelve el año UTC a partir de un timestamp UNIX (int32 o int64)
-    sin usar datetime. Ultra rápido.
+    sin usar datetime. Basado en el algoritmo de Howard Hinnant.
     """
-    # días desde epoch
-    days = ts // 86400  
+    # días desde epoch (1970-01-01)
+    days = ts // 86400
 
-    # algoritmo de Howard Hinnant: date::year_month_day
     z = days + 719468
-    era = (z >= 0)
-    era = (z // 146097) if era else ((z - 146096) // 146097)
-    doe = z - era * 146097                      # día dentro de la era
+    # era (división entera floor)
+    era = (z // 146097) if z >= 0 else ((z - 146096) // 146097)
+    doe = z - era * 146097                       # day-of-era
     yoe = (doe - doe//1460 + doe//36524 - doe//146096) // 365
     y = yoe + era * 400
-    return y + 1 
+    doy = doe - (365*yoe + yoe//4 - yoe//100)    # day-of-year (0..365)
+    mp = (5*doy + 2) // 153
+    month = mp + 3 if mp < 10 else mp - 9        # 1..12
+    year = y + (1 if month <= 2 else 0)          # sumar 1 sólo si mes == 1 ó 2
+    return year
 
 
 def filter_by_year(rows):
