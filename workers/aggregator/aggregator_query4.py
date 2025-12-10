@@ -13,6 +13,7 @@ from common.logger import init_log
 from workers.aggregator.delete_thread import delete_sessions_thread
 from workers.aggregator.sesion_state_manager import SessionStateManager, merge_replace_dicts, merge_sum_dicts
 from workers.session_tracker import SessionTracker
+from common.utils import int_to_date
 
 # Añadir paths al PYTHONPATH
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
@@ -39,36 +40,6 @@ STORES_ROUTING_KEY = "q4"
 USERS_QUEUE = "users_raw"
 
 OUTPUT_QUEUE = "results_query4" 
-
-def int_to_date(ts: int) -> str:
-    days = ts // 86400  # días desde 1970-01-01
-
-    # Algoritmo de conversión de días a fecha (Hinnant)
-    z = days + 719468
-    era = (z >= 0) and z // 146097 or -((-z - 1) // 146097) - 1
-    doe = z - era * 146097
-    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
-    y = yoe + era * 400
-    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
-    mp = (5 * doy + 2) // 153
-    d = doy - (153 * mp + 2) // 5 + 1
-    m = mp + 3 if mp < 10 else mp - 9
-    y += (m <= 2)
-
-    return f"{y:04d}-{m:02d}-{d:02d}"
-
-def canonicalize_id(value):
-    """Normaliza IDs: si vienen como "123.0" convertir a "123"; sino, devolver strip()."""
-    if value is None:
-        return ''
-    if not isinstance(value, str):
-        value = str(value)
-    s = value.strip()
-    if '.' in s:
-        left, right = s.split('.', 1)
-        if right.strip('0') == '':
-            return left
-    return s
 
 class AggregatorQuery4:
     def __init__(self):
