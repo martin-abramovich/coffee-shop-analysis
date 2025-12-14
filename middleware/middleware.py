@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
+import os
 import pika 
+
+HEARBEAT_INTERVAL = os.environ.get('HEARBEAT_INTERVAL', 60*30)
 
 class MessageMiddlewareMessageError(Exception):
     pass
@@ -59,7 +62,7 @@ class MessageMiddlewareExchange(MessageMiddleware):
 		try:
 			parameters = pika.ConnectionParameters(
 				host=self.host,
-				heartbeat=60*30  			
+				heartbeat=HEARBEAT_INTERVAL  			
     		)
 			self.connection = pika.BlockingConnection(parameters)
 			self.channel = self.connection.channel()
@@ -151,7 +154,7 @@ class MessageMiddlewareQueue(MessageMiddleware):
 		try:
 			parameters = pika.ConnectionParameters(
 				host=self.host,
-				heartbeat=60*30
+				heartbeat=HEARBEAT_INTERVAL
 			)
 			self.connection = pika.BlockingConnection(parameters)
 			self.channel = self.connection.channel()
