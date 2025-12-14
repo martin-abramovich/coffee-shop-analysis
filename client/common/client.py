@@ -21,17 +21,26 @@ class Client:
         Retorna True si se envió exitosamente, False si se canceló por stop_event.
         Lanza excepciones de red si falla la comunicación.
         """
+        is_send = False
+        
         with self._lock:
             if self.stop_event.is_set():
-                return False
+                return is_send
             
             if not self.sock:
                 raise RuntimeError("Cliente no conectado. Llama connect() primero.")
             
             # sendall() maneja short writes automáticamente
             # pero puede lanzar excepciones que el caller debe manejar
-            self.sock.sendall(batch)
-            return True
+            while not is_send: 
+                try:
+                    self.sock.sendall(batch)
+                    is_send = True
+                except socket.timeout:
+                    if self.stop_event.is_set():
+                        return is_send
+                    
+            return is_send
 
 
     def receive_response(self) -> str:

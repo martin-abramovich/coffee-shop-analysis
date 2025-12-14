@@ -293,6 +293,8 @@ def sender_thread(client: Client, data_queue: queue.Queue, stop_event: threading
                         break
                 elif item[0] == 'error':
                     logging.error(f"Error recibido del lector: {item[1]}")
+                    count_read_threads += 1
+                    stop_event.set()
                     continue
                 elif item[0] == 'batch':
                     _, batch = item
